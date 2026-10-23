@@ -35,4 +35,12 @@ return [
         ],
     ],
 
+    'melipayamak' => [
+        'enabled' => env('MELIPAYAMAK_ENABLED', false),
+        'local_log_enabled' => env('MELIPAYAMAK_LOCAL_LOG_ENABLED', false),
+        'url' => env('MELIPAYAMAK_API_URL'),
+        'otp_body_id' => env('MELIPAYAMAK_OTP_BODY_ID'),
+        'inactivity_warning_body_id' => env('MELIPAYAMAK_INACTIVITY_WARNING_BODY_ID'),
+    ],
+
 ];
