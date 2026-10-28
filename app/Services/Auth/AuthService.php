@@ -3,7 +3,9 @@
 namespace App\Services\Auth;
 
 use App\Models\Otp;
+use App\Models\Role;
 use App\Models\User;
+use App\Services\Admin\UserRoleChangeAuditor;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -14,6 +16,7 @@ class AuthService
     public function __construct(
         private readonly OtpService $otpService,
         private readonly DeviceService $deviceService,
+        private readonly TwoFactorLoginService $twoFactorLogin,
     ) {}
 
     public function verify(
@@ -26,7 +29,6 @@ class AuthService
         ?string $pushToken,
         ?string $platform,
         ?string $name,
-        ?string $email,
     ): array {
         $lockSeconds = $this->otpService->availableLockSeconds($phone, $type);
 
@@ -44,21 +46,14 @@ class AuthService
             $pushToken,
             $platform,
             $name,
-            $email,
         ): array {
-            $otp = Otp::query()
-                ->where('phone', $phone)
-                ->where('type', $type)
-                ->where('used', false)
-                ->latest('id')
-                ->lockForUpdate()
-                ->first();
+            $otp = Otp::lockLatestUnusedForVerification($phone, $type);
 
             if (! $otp) {
                 return ['error' => 'invalid'];
             }
 
-            if ($otp->expires_at->isPast()) {
+            if ($otp->isExpired()) {
                 $otp->update(['used' => true]);
 
                 return ['error' => 'expired'];
@@ -73,43 +68,49 @@ class AuthService
             $user = User::query()->where('phone', $phone)->lockForUpdate()->first();
 
             if ($type === 'register') {
-                if ($user || ($email !== null && User::query()
-                    ->where(fn ($query) => $query
-                        ->where('email', $email)
-                        ->orWhere('pending_email', $email))
-                    ->exists())) {
+                if ($user) {
                     $otp->update(['used' => true]);
 
                     return ['error' => 'already_registered'];
                 }
 
-                $user = User::query()->create([
+                $user = new User([
                     'name' => $name,
-                    'email' => $email,
                     'phone' => $phone,
                     'phone_verified_at' => now(),
                     'password' => Str::random(64),
                 ]);
+                $user->forceFill(['is_active' => true])->saveOrFail();
+                $userRole = Role::findOrCreate('User', 'web');
+                $user->assignRole($userRole);
+                app(UserRoleChangeAuditor::class)->record(
+                    $user,
+                    [],
+                    [$userRole->name],
+                    null,
+                    'otp:registration',
+                );
             } elseif (! $user) {
                 if ($name === null) {
                     return ['status' => 'profile_required'];
                 }
 
-                if ($email !== null && User::query()
-                    ->where(fn ($query) => $query
-                        ->where('email', $email)
-                        ->orWhere('pending_email', $email))
-                    ->exists()) {
-                    return ['error' => 'email_taken'];
-                }
-
-                $user = User::query()->create([
+                $user = new User([
                     'name' => $name,
-                    'email' => $email,
                     'phone' => $phone,
                     'phone_verified_at' => now(),
                     'password' => Str::random(64),
                 ]);
+                $user->forceFill(['is_active' => true])->saveOrFail();
+                $userRole = Role::findOrCreate('User', 'web');
+                $user->assignRole($userRole);
+                app(UserRoleChangeAuditor::class)->record(
+                    $user,
+                    [],
+                    [$userRole->name],
+                    null,
+                    'otp:registration',
+                );
             }
 
             if (! $user) {
@@ -118,11 +119,30 @@ class AuthService
                 return ['error' => 'invalid'];
             }
 
+            if (! $user->is_active) {
+                $otp->update(['used' => true]);
+
+                return ['error' => 'account_disabled'];
+            }
+
             if ($user->phone_verified_at === null) {
                 $user->forceFill(['phone_verified_at' => now()])->save();
             }
 
             $otp->update(['used' => true]);
+
+            if ($user->two_factor_enabled_at !== null) {
+                return [
+                    'two_factor_challenge' => $this->twoFactorLogin->createChallenge(
+                        $user,
+                        $deviceId,
+                        $deviceName,
+                        $deviceModel,
+                        $platform,
+                        $pushToken,
+                    ),
+                ];
+            }
 
             $session = $this->deviceService->register(
                 $user,
@@ -142,23 +162,29 @@ class AuthService
             return $result;
         }
 
+        if (isset($result['two_factor_challenge'])) {
+            $this->otpService->clearFailedVerifications($phone, $type);
+
+            return $result['two_factor_challenge'];
+        }
+
         if (isset($result['error'])) {
             if (in_array($result['error'], ['invalid'], true)) {
                 $this->otpService->recordFailedVerification($phone, $type);
-            } else {
+            } elseif ($result['error'] !== 'expired') {
                 $this->otpService->clearFailedVerifications($phone, $type);
             }
 
             $message = $result['error'] === 'expired'
                 ? 'کد تأیید منقضی شده است. کد تازه درخواست کنید.'
                 : match ($result['error']) {
-                    'already_registered' => 'این شماره یا ایمیل قبلاً ثبت شده است. برای ورود اقدام کنید.',
-                    'email_taken' => 'این ایمیل قبلاً ثبت شده است. ایمیل دیگری وارد کنید یا آن را خالی بگذارید.',
+                    'already_registered' => 'این شماره قبلاً ثبت شده است. برای ورود اقدام کنید.',
+                    'account_disabled' => 'دسترسی این حساب غیرفعال شده است.',
                     default => 'کد تأیید معتبر نیست.',
                 };
 
             throw ValidationException::withMessages([
-                ($result['error'] === 'email_taken' ? 'email' : 'code') => $message,
+                'code' => $message,
             ]);
         }
 

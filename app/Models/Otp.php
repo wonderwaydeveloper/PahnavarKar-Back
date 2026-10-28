@@ -26,6 +26,33 @@ class Otp extends Model
         ];
     }
 
+    public function isExpired(): bool
+    {
+        return $this->expires_at->lessThanOrEqualTo(now());
+    }
+
+    public static function lockLatestUnusedForVerification(string $phone, string $type): ?self
+    {
+        $otpId = static::query()
+            ->where('phone', $phone)
+            ->where('type', $type)
+            ->where('used', false)
+            ->latest('id')
+            ->value('id');
+
+        if ($otpId === null) {
+            return null;
+        }
+
+        return static::query()
+            ->whereKey($otpId)
+            ->where('phone', $phone)
+            ->where('type', $type)
+            ->where('used', false)
+            ->lockForUpdate()
+            ->first();
+    }
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);

@@ -5,6 +5,7 @@ namespace App\Services\Auth;
 use App\Models\PushSubscription;
 use App\Models\User;
 use App\Models\UserDevice;
+use App\Services\Notifications\ExpoPushService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -12,6 +13,8 @@ use Illuminate\Validation\ValidationException;
 
 class DeviceService
 {
+    public function __construct(private readonly ExpoPushService $pushNotifications) {}
+
     public function register(
         User $user,
         string $deviceId,
@@ -20,10 +23,11 @@ class DeviceService
         ?string $pushToken,
         ?string $platform,
     ): array {
-        return DB::transaction(function () use ($user, $deviceId, $deviceName, $deviceModel, $pushToken, $platform): array {
+        $session = DB::transaction(function () use ($user, $deviceId, $deviceName, $deviceModel, $pushToken, $platform): array {
             $lockedUser = User::query()->lockForUpdate()->findOrFail($user->id);
             $this->pruneExpiredSessions($lockedUser);
             $device = $lockedUser->devices()->where('device_id', $deviceId)->first();
+            $isNewDevice = ! $device?->is_active;
             $maxDevices = 3;
             $activeDevices = $lockedUser->devices()->where('is_active', true)->count();
 
@@ -43,7 +47,6 @@ class DeviceService
             );
             $lockedUser->forceFill([
                 'last_active_at' => now(),
-                'inactivity_deletion_email_notified_at' => null,
                 'inactivity_deletion_sms_notified_at' => null,
                 'inactivity_deletion_scheduled_at' => null,
             ])->saveOrFail();
@@ -73,8 +76,17 @@ class DeviceService
                 'device' => $device,
                 'token' => $token->plainTextToken,
                 'expires_at' => $token->accessToken->expires_at,
+                'new_device' => $isNewDevice,
             ];
         });
+
+        if ($session['new_device']) {
+            $this->pushNotifications->sendNewDeviceAlert($session['user'], $session['device']->id);
+        }
+
+        unset($session['new_device']);
+
+        return $session;
     }
 
     public function list(User $user): Collection
@@ -153,12 +165,10 @@ class DeviceService
             $user->last_active_at === null
             || $user->last_active_at->lt($now->copy()->subMinutes(5))
             || $user->inactivity_deletion_scheduled_at !== null
-            || $user->inactivity_deletion_email_notified_at !== null
             || $user->inactivity_deletion_sms_notified_at !== null
         ) {
             $user->forceFill([
                 'last_active_at' => $now,
-                'inactivity_deletion_email_notified_at' => null,
                 'inactivity_deletion_sms_notified_at' => null,
                 'inactivity_deletion_scheduled_at' => null,
             ])->saveOrFail();

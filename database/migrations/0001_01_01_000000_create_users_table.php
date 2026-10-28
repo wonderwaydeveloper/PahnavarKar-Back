@@ -14,26 +14,46 @@ return new class extends Migration
         Schema::create('users', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->string('email')->nullable()->unique();
-            $table->string('pending_email')->nullable()->unique();
             $table->string('profile_photo_path')->nullable();
             $table->string('phone', 16)->nullable()->unique();
-            $table->timestamp('email_verified_at')->nullable();
             $table->timestamp('phone_verified_at')->nullable();
+            $table->boolean('is_active')->default(true)->index();
+            $table->string('account_status_reason', 500)->nullable();
+            $table->timestamp('account_status_changed_at')->nullable();
+            $table->foreignId('account_status_changed_by')
+                ->nullable()
+                ->constrained('users')
+                ->nullOnDelete();
             $table->timestamp('last_active_at')->nullable()->index();
             $table->unsignedTinyInteger('inactivity_deletion_period_months')->nullable()->index();
-            $table->timestamp('inactivity_deletion_email_notified_at')->nullable();
             $table->timestamp('inactivity_deletion_sms_notified_at')->nullable();
             $table->timestamp('inactivity_deletion_scheduled_at')->nullable();
+            $table->text('two_factor_secret')->nullable();
+            $table->text('two_factor_pending_secret')->nullable();
+            $table->timestamp('two_factor_pending_expires_at')->nullable();
+            $table->timestamp('two_factor_enabled_at')->nullable();
+            $table->json('two_factor_recovery_codes')->nullable();
+            $table->unsignedBigInteger('two_factor_last_used_step')->nullable();
+            $table->unsignedBigInteger('wallet_balance')->default(0);
             $table->string('password');
             $table->rememberToken();
             $table->timestamps();
         });
 
-        Schema::create('password_reset_tokens', function (Blueprint $table) {
-            $table->string('email')->primary();
-            $table->string('token');
-            $table->timestamp('created_at')->nullable();
+        Schema::create('two_factor_login_challenges', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            $table->string('token_hash', 64)->unique();
+            $table->uuid('device_id');
+            $table->string('device_name')->nullable();
+            $table->string('device_model')->nullable();
+            $table->string('platform', 32)->default('unknown');
+            $table->text('push_token')->nullable();
+            $table->timestamp('expires_at')->index();
+            $table->timestamp('consumed_at')->nullable();
+            $table->unsignedTinyInteger('attempts')->default(0);
+            $table->timestamps();
+            $table->index(['user_id', 'expires_at']);
         });
 
         Schema::create('sessions', function (Blueprint $table) {
@@ -99,11 +119,11 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('personal_access_tokens');
+        Schema::dropIfExists('two_factor_login_challenges');
         Schema::dropIfExists('push_subscriptions');
         Schema::dropIfExists('user_devices');
         Schema::dropIfExists('otps');
         Schema::dropIfExists('users');
-        Schema::dropIfExists('password_reset_tokens');
         Schema::dropIfExists('sessions');
     }
 };

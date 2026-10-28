@@ -1,0 +1,182 @@
+openapi: 3.1.0
+info:
+  title: PahnavarKar API
+  version: 1.0.0
+  description: |
+    Public API contract for the supported authentication, plan-catalog, and
+    push-consent endpoints. Authentication is passwordless and uses SMS OTP.
+servers:
+  - url: /api/v1
+tags:
+  - name: Authentication
+  - name: Plans
+  - name: Push notifications
+paths:
+  /plans:
+    get:
+      tags: [Plans]
+      summary: Get public plan catalog
+      responses:
+        "200":
+          description: Plan tiers, durations, offers, and feature catalog
+  /auth/otp/send:
+    post:
+      tags: [Authentication]
+      summary: Request an SMS one-time code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, type]
+              properties:
+                phone:
+                  type: string
+                  description: Iranian mobile number in +989xxxxxxxxx form
+                type:
+                  type: string
+                  enum: [login, register]
+                name:
+                  type: string
+                  maxLength: 255
+      responses:
+        "202":
+          description: Request accepted
+        "422":
+          $ref: "#/components/responses/Problem"
+        "429":
+          $ref: "#/components/responses/Problem"
+  /auth/otp/verify:
+    post:
+      tags: [Authentication]
+      summary: Verify an SMS code and create a device session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, type, code, device_id]
+              properties:
+                phone:
+                  type: string
+                type:
+                  type: string
+                  enum: [login, register]
+                code:
+                  type: string
+                  pattern: "^[0-9]{6}$"
+                device_id:
+                  type: string
+                  format: uuid
+                device_name:
+                  type: string
+                device_model:
+                  type: string
+                platform:
+                  type: string
+                  enum: [ios, android, web, windows, macos, linux, desktop]
+                push_token:
+                  type: string
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Authenticated session or profile-required response
+        "422":
+          $ref: "#/components/responses/Problem"
+        "429":
+          $ref: "#/components/responses/Problem"
+  /auth/notifications/push-token:
+    get:
+      tags: [Push notifications]
+      summary: Read push consent for the current device
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current-device subscription status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled]
+                properties:
+                  enabled:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Problem"
+    put:
+      tags: [Push notifications]
+      summary: Enable push notifications for the current device
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [push_token, platform]
+              properties:
+                push_token:
+                  type: string
+                  maxLength: 512
+                platform:
+                  type: string
+                  enum: [ios, android]
+      responses:
+        "200":
+          description: Push subscription saved
+        "401":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Problem"
+    delete:
+      tags: [Push notifications]
+      summary: Disable push notifications for the current device
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Push subscription removed
+        "401":
+          $ref: "#/components/responses/Problem"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Sanctum
+  responses:
+    Problem:
+      description: RFC 7807 problem response, retaining message/errors for existing clients
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, detail, instance, message]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        message:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string

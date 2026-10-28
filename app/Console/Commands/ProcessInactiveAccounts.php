@@ -2,14 +2,12 @@
 
 namespace App\Console\Commands;
 
-use App\Mail\AccountInactivityDeletionWarningMail;
 use App\Models\User;
 use App\Services\Auth\InactivityWarningDeliveryConfiguration;
 use App\Services\Auth\SmsProvider;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
 
@@ -47,12 +45,10 @@ class ProcessInactiveAccounts extends Command
         }
         if (! $this->isEligibleForWarning($user)) {
             if (
-                $user->inactivity_deletion_email_notified_at
-                || $user->inactivity_deletion_sms_notified_at
+                $user->inactivity_deletion_sms_notified_at
                 || $user->inactivity_deletion_scheduled_at
             ) {
                 $user->forceFill([
-                    'inactivity_deletion_email_notified_at' => null,
                     'inactivity_deletion_sms_notified_at' => null,
                     'inactivity_deletion_scheduled_at' => null,
                 ])->saveOrFail();
@@ -61,20 +57,12 @@ class ProcessInactiveAccounts extends Command
             return;
         }
 
-        if (! $user->email || ! $user->email_verified_at || ! $user->phone || ! $user->phone_verified_at) {
-            Log::warning('Inactivity deletion is enabled without verified notification destinations.', [
+        if (! $user->phone || ! $user->phone_verified_at) {
+            Log::warning('Inactivity deletion is enabled without a verified phone number.', [
                 'user_id' => $userId,
             ]);
 
             return;
-        }
-
-        if (! $user->inactivity_deletion_email_notified_at && $deliveryConfiguration->emailIsConfigured()) {
-            $this->sendEmailWarning($user);
-        } elseif (! $user->inactivity_deletion_email_notified_at) {
-            Log::warning('Account inactivity email warning was not sent because no real mail transport is configured.', [
-                'user_id' => $user->id,
-            ]);
         }
 
         if (! $user->inactivity_deletion_sms_notified_at && $deliveryConfiguration->smsIsConfigured()) {
@@ -87,8 +75,7 @@ class ProcessInactiveAccounts extends Command
 
         $user->refresh();
         if (
-            $user->inactivity_deletion_email_notified_at
-            && $user->inactivity_deletion_sms_notified_at
+            $user->inactivity_deletion_sms_notified_at
             && ! $user->inactivity_deletion_scheduled_at
         ) {
             $user->forceFill([
@@ -96,11 +83,7 @@ class ProcessInactiveAccounts extends Command
             ])->saveOrFail();
         }
 
-        if (
-            $user->inactivity_deletion_scheduled_at
-            && $user->inactivity_deletion_scheduled_at->isPast()
-            && $this->isEligibleForDeletion($user)
-        ) {
+        if ($this->isEligibleForDeletion($user)) {
             $this->deleteAccount($userId);
         }
     }
@@ -116,31 +99,9 @@ class ProcessInactiveAccounts extends Command
     private function isEligibleForDeletion(User $user): bool
     {
         return $this->isEligibleForWarning($user)
-            && $user->inactivity_deletion_email_notified_at !== null
             && $user->inactivity_deletion_sms_notified_at !== null
             && $user->inactivity_deletion_scheduled_at !== null
             && $user->inactivity_deletion_scheduled_at->lte(now());
-    }
-
-    private function sendEmailWarning(User $user): void
-    {
-        try {
-            Mail::to($user->email)->send(new AccountInactivityDeletionWarningMail(
-                $user->name,
-                $user->inactivity_deletion_period_months,
-                30,
-            ));
-
-            User::query()
-                ->whereKey($user->id)
-                ->whereNull('inactivity_deletion_email_notified_at')
-                ->update(['inactivity_deletion_email_notified_at' => now()]);
-        } catch (Throwable $exception) {
-            Log::error('Could not send account inactivity email warning.', [
-                'user_id' => $user->id,
-                'exception' => $exception,
-            ]);
-        }
     }
 
     private function sendSmsWarning(User $user, SmsProvider $smsProvider): void
@@ -175,9 +136,6 @@ class ProcessInactiveAccounts extends Command
             $path = $user->profile_photo_path;
             $user->tokens()->delete();
             DB::table('sessions')->where('user_id', $user->id)->delete();
-            if ($user->email) {
-                DB::table('password_reset_tokens')->where('email', $user->email)->delete();
-            }
             $user->delete();
 
             return $path;

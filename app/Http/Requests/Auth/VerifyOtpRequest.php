@@ -10,12 +10,10 @@ class VerifyOtpRequest extends FormRequest
     protected function prepareForValidation(): void
     {
         $phone = $this->input('phone');
-        $email = $this->input('email');
         $name = $this->input('name');
 
         $this->merge([
             'phone' => PhoneNumber::normalize($phone) ?? (is_string($phone) ? trim($phone) : $phone),
-            'email' => is_string($email) ? (mb_strtolower(trim($email)) ?: null) : $email,
             'name' => is_string($name) ? trim($name) : $name,
             'type' => is_string($this->input('type')) ? trim($this->input('type')) : $this->input('type'),
         ]);
@@ -33,7 +31,6 @@ class VerifyOtpRequest extends FormRequest
             'push_token' => ['nullable', 'string', 'max:512'],
             'platform' => ['nullable', 'string', 'in:ios,android,web,windows,macos,linux,desktop'],
             'name' => ['required_if:type,register', 'nullable', 'string', 'max:255'],
-            'email' => ['nullable', 'email', 'max:255'],
         ];
     }
 }

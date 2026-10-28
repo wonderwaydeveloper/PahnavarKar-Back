@@ -2,25 +2,28 @@
 
 namespace App\Services\Auth;
 
+use App\Jobs\SendOtpSms;
 use App\Models\Otp;
 use App\Models\User;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class OtpService
 {
     public function __construct(private readonly SmsProvider $smsProvider) {}
 
-    public function send(string $phone, string $type, ?string $email = null): void
+    public function send(string $phone, string $type): void
     {
         $user = User::query()->where('phone', $phone)->first();
 
         if ($type === 'register') {
-            if ($user || ($email !== null && User::query()->where('email', $email)->exists())) {
+            if ($user) {
                 throw ValidationException::withMessages([
-                    'phone' => 'این شماره یا ایمیل قبلاً ثبت شده است. برای ورود، گزینهٔ ورود را انتخاب کنید.',
+                    'phone' => 'این شماره قبلاً ثبت شده است. برای ورود، گزینهٔ ورود را انتخاب کنید.',
                 ]);
             }
         }
@@ -42,6 +45,21 @@ class OtpService
             ]);
         });
 
+        if ($this->shouldQueueOtpSms()) {
+            try {
+                Bus::dispatch(
+                    (new SendOtpSms((int) $otp->id, $phone, $code))
+                        ->onQueue((string) config('services.sms.queue')),
+                );
+            } catch (Throwable $exception) {
+                $otp->update(['used' => true]);
+
+                throw new SmsDeliveryException('Could not queue the OTP message.', 0, $exception);
+            }
+
+            return;
+        }
+
         try {
             $this->smsProvider->sendOtp($phone, $code);
         } catch (SmsDeliveryException $exception) {
@@ -49,6 +67,29 @@ class OtpService
 
             throw $exception;
         }
+    }
+
+    private function shouldQueueOtpSms(): bool
+    {
+        $connection = config('queue.default');
+        $driver = is_string($connection)
+            ? config("queue.connections.{$connection}.driver")
+            : null;
+        $queue = config('services.sms.queue');
+        $url = config('services.melipayamak.url');
+        $bodyId = config('services.melipayamak.otp_body_id');
+
+        return config('services.sms.queue_enabled') === true
+            && config('services.melipayamak.enabled') === true
+            && ! (app()->environment('local') && config('services.melipayamak.local_log_enabled'))
+            && is_string($queue)
+            && $queue !== ''
+            && is_string($url)
+            && str_starts_with($url, 'https://console.melipayamak.com/api/send/shared/')
+            && is_string($bodyId)
+            && $bodyId !== ''
+            && is_string($driver)
+            && in_array($driver, ['database', 'redis', 'sqs', 'beanstalkd'], true);
     }
 
     public function recordFailedVerification(string $phone, string $type): void

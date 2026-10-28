@@ -5,26 +5,24 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\SendOtpRequest;
 use App\Http\Requests\Auth\VerifyOtpRequest;
-use App\Mail\EmailVerificationCodeMail;
-use App\Models\EmailVerificationCode;
 use App\Models\Otp;
 use App\Models\User;
 use App\Services\Auth\AuthService;
 use App\Services\Auth\DeviceService;
 use App\Services\Auth\InactivityWarningDeliveryConfiguration;
 use App\Services\Auth\OtpService;
+use App\Services\Auth\PhoneNumber;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
+use Throwable;
 
 class AuthController extends Controller
 {
@@ -40,7 +38,6 @@ class AuthController extends Controller
         $this->otpService->send(
             $data['phone'],
             $data['type'],
-            $data['email'] ?? null,
         );
 
         return response()->json([
@@ -65,11 +62,14 @@ class AuthController extends Controller
             $data['push_token'] ?? null,
             $data['platform'] ?? null,
             $data['name'] ?? null,
-            $data['email'] ?? null,
         );
 
         if (($result['status'] ?? null) === 'profile_required') {
             return response()->json(['status' => 'profile_required']);
+        }
+
+        if (($result['status'] ?? null) === 'two_factor_required') {
+            return response()->json($result);
         }
 
         return response()->json([
@@ -100,18 +100,14 @@ class AuthController extends Controller
         ]);
         $period = $data['period_months'] ?? null;
 
-        if ($period !== null && (
-            ! $user->phone_verified_at
-            || ! $user->email
-            || ! $user->email_verified_at
-        )) {
+        if ($period !== null && ! $user->phone_verified_at) {
             throw ValidationException::withMessages([
-                'period_months' => 'برای فعال‌سازی حذف خودکار، شمارهٔ تلفن و ایمیل حساب باید تأیید شده باشند.',
+                'period_months' => 'برای فعال‌سازی حذف خودکار، شمارهٔ تلفن حساب باید تأیید شده باشد.',
             ]);
         }
         if ($period !== null && ! $deliveryConfiguration->canDeliverWarnings()) {
             throw ValidationException::withMessages([
-                'period_months' => 'برای فعال‌سازی، ارسال واقعی ایمیل و پیامک هشدار باید در سرور پیکربندی شده باشد.',
+                'period_months' => 'برای فعال‌سازی، ارسال واقعی پیامک هشدار باید در سرور پیکربندی شده باشد.',
             ]);
         }
 
@@ -119,7 +115,6 @@ class AuthController extends Controller
             $user->forceFill([
                 'inactivity_deletion_period_months' => $period,
                 'last_active_at' => now(),
-                'inactivity_deletion_email_notified_at' => null,
                 'inactivity_deletion_sms_notified_at' => null,
                 'inactivity_deletion_scheduled_at' => null,
             ])->saveOrFail();
@@ -134,199 +129,24 @@ class AuthController extends Controller
         $user = $request->user();
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'email' => [
-                'nullable',
-                'email',
-                'max:255',
-                Rule::unique('users', 'email')->ignore($user->id),
-                Rule::unique('users', 'pending_email')->ignore($user->id),
-            ],
         ]);
-
-        $emailProvided = array_key_exists('email', $data);
-        $email = $emailProvided && isset($data['email'])
-            ? mb_strtolower(trim($data['email']))
-            : null;
-        DB::transaction(function () use ($user, $data, $email, $emailProvided): void {
-            $lockedUser = User::query()->lockForUpdate()->findOrFail($user->id);
-            $currentEmail = is_string($lockedUser->email)
-                ? mb_strtolower(trim($lockedUser->email))
-                : null;
-            $oldPendingEmail = $lockedUser->pending_email;
-            if ($emailProvided && $email === null && ($currentEmail !== null || $oldPendingEmail !== null)) {
-                throw ValidationException::withMessages([
-                    'email' => 'پس از ثبت ایمیل، امکان حذف آن وجود ندارد؛ فقط می‌توانید آن را ویرایش کنید.',
-                ]);
-            }
-
-            $changes = ['name' => trim($data['name'])];
-
-            if ($emailProvided) {
-                if ($email === null) {
-                    $changes['email'] = null;
-                    $changes['pending_email'] = null;
-                    $changes['email_verified_at'] = null;
-                } elseif ($email === $currentEmail) {
-                    $changes['pending_email'] = null;
-                } else {
-                    $changes['pending_email'] = $email;
-                }
-            }
-
-            $lockedUser->forceFill($changes)->saveOrFail();
-            if ($oldPendingEmail !== $lockedUser->pending_email) {
-                EmailVerificationCode::query()
-                    ->where('user_id', $lockedUser->id)
-                    ->where('used', false)
-                    ->update(['used' => true]);
-            }
-        });
+        $user->forceFill(['name' => trim($data['name'])])->saveOrFail();
 
         return response()->json(['user' => $user->fresh()]);
-    }
-
-    public function sendEmailVerificationCode(Request $request): JsonResponse
-    {
-        /** @var User $user */
-        $user = $request->user();
-        $email = $user->pending_email ?? $user->email;
-        if (! is_string($email) || $email === '') {
-            throw ValidationException::withMessages([
-                'email' => 'ابتدا یک نشانی ایمیل معتبر در پروفایل ثبت کنید.',
-            ]);
-        }
-        if ($user->pending_email === null && $user->email_verified_at !== null) {
-            return response()->json(['message' => 'این نشانی ایمیل قبلاً تأیید شده است.']);
-        }
-
-        $rateLimitKey = 'email-verification-send:'.$user->id;
-        $resendLimitKey = 'email-verification-resend:'.$user->id;
-        if (RateLimiter::tooManyAttempts($resendLimitKey, 1)) {
-            abort(429, 'برای ارسال دوبارهٔ کد کمی صبر کنید.');
-        }
-        if (RateLimiter::tooManyAttempts($rateLimitKey, 5)) {
-            abort(429, 'تعداد درخواست‌های کد تأیید زیاد است. کمی بعد دوباره تلاش کنید.');
-        }
-        RateLimiter::hit($resendLimitKey, 60);
-        RateLimiter::hit($rateLimitKey, 3600);
-
-        $code = (string) random_int(100000, 999999);
-        $verification = DB::transaction(function () use ($user, $email, $code): EmailVerificationCode {
-            EmailVerificationCode::query()
-                ->where('user_id', $user->id)
-                ->where('used', false)
-                ->update(['used' => true]);
-
-            return EmailVerificationCode::query()->create([
-                'user_id' => $user->id,
-                'email' => $email,
-                'code_hash' => Hash::make($code),
-                'expires_at' => now()->addMinutes(10),
-            ]);
-        });
-
-        try {
-            Mail::to($email)->send(new EmailVerificationCodeMail($code, $user->name));
-        } catch (\Throwable $exception) {
-            $verification->update(['used' => true]);
-            RateLimiter::clear($rateLimitKey);
-            RateLimiter::clear($resendLimitKey);
-            throw $exception;
-        }
-
-        return response()->json([
-            'message' => 'اگر ارسال ایمیل امکان‌پذیر باشد، کد تأیید ارسال می‌شود.',
-            'resend_after' => 60,
-        ], Response::HTTP_ACCEPTED);
-    }
-
-    public function verifyEmail(Request $request): JsonResponse
-    {
-        /** @var User $user */
-        $user = $request->user();
-        $data = $request->validate([
-            'code' => ['required', 'string', 'regex:/^[0-9]{6}$/'],
-        ]);
-
-        $result = DB::transaction(function () use ($data, $user): array {
-            $lockedUser = User::query()->lockForUpdate()->findOrFail($user->id);
-            $verification = EmailVerificationCode::query()
-                ->where('user_id', $lockedUser->id)
-                ->where('used', false)
-                ->latest('id')
-                ->lockForUpdate()
-                ->first();
-
-            $emailToVerify = $lockedUser->pending_email ?? $lockedUser->email;
-            if (! $verification || $verification->email !== $emailToVerify) {
-                $verification?->update(['used' => true]);
-
-                return ['error' => 'invalid'];
-            }
-            if ($verification->expires_at->isPast()) {
-                $verification->update(['used' => true]);
-
-                return ['error' => 'expired'];
-            }
-            if ($verification->attempts >= 5) {
-                $verification->update(['used' => true]);
-
-                return ['error' => 'invalid'];
-            }
-            if (! Hash::check($data['code'], $verification->code_hash)) {
-                $verification->increment('attempts');
-
-                return ['error' => 'invalid'];
-            }
-
-            if ($lockedUser->pending_email !== null) {
-                $emailTaken = User::query()
-                    ->where('email', $lockedUser->pending_email)
-                    ->where('id', '!=', $lockedUser->id)
-                    ->exists();
-                if ($emailTaken) {
-                    $verification->update(['used' => true]);
-
-                    return ['error' => 'email_taken'];
-                }
-
-                $lockedUser->forceFill([
-                    'email' => $lockedUser->pending_email,
-                    'pending_email' => null,
-                    'email_verified_at' => now(),
-                ])->saveOrFail();
-            } else {
-                $lockedUser->forceFill(['email_verified_at' => now()])->saveOrFail();
-            }
-            $verification->update(['used' => true]);
-            EmailVerificationCode::query()
-                ->where('user_id', $lockedUser->id)
-                ->where('used', false)
-                ->update(['used' => true]);
-
-            return ['user' => $lockedUser->fresh()];
-        });
-
-        if (isset($result['error'])) {
-            throw ValidationException::withMessages([
-                'code' => $result['error'] === 'expired'
-                    ? 'کد تأیید منقضی شده است. کد تازه درخواست کنید.'
-                    : ($result['error'] === 'email_taken'
-                        ? 'این نشانی ایمیل به حساب دیگری تعلق دارد. ایمیل دیگری انتخاب کنید.'
-                        : 'کد تأیید معتبر نیست.'),
-            ]);
-        }
-
-        RateLimiter::clear('email-verification-send:'.$user->id);
-        RateLimiter::clear('email-verification-resend:'.$user->id);
-
-        return response()->json(['user' => $result['user']]);
     }
 
     public function changePhone(Request $request): JsonResponse
     {
         /** @var User $user */
         $user = $request->user();
+        abort_unless($user instanceof User, 401);
+        $phone = PhoneNumber::normalize($request->input('phone'));
+        if ($phone === null) {
+            throw ValidationException::withMessages([
+                'phone' => 'شمارهٔ موبایل معتبر وارد کنید.',
+            ]);
+        }
+        $request->merge(['phone' => $phone]);
         $data = $request->validate([
             'phone' => [
                 'required',
@@ -352,18 +172,12 @@ class AuthController extends Controller
             : null;
 
         $result = DB::transaction(function () use ($data, $user, $currentTokenId, $currentDeviceId): array {
-            $otp = Otp::query()
-                ->where('phone', $data['phone'])
-                ->where('type', 'login')
-                ->where('used', false)
-                ->latest('id')
-                ->lockForUpdate()
-                ->first();
+            $otp = Otp::lockLatestUnusedForVerification($data['phone'], 'login');
 
             if (! $otp) {
                 return ['error' => 'invalid'];
             }
-            if ($otp->expires_at->isPast()) {
+            if ($otp->isExpired()) {
                 $otp->update(['used' => true]);
 
                 return ['error' => 'expired'];
@@ -381,6 +195,7 @@ class AuthController extends Controller
                 return ['error' => 'phone_taken'];
             }
 
+            $previousPhone = $lockedUser->phone;
             $lockedUser->forceFill([
                 'phone' => $data['phone'],
                 'phone_verified_at' => now(),
@@ -402,13 +217,22 @@ class AuthController extends Controller
             }
             $otp->update(['used' => true]);
 
+            if ($previousPhone !== $lockedUser->phone) {
+                activity('users')
+                    ->performedOn($lockedUser)
+                    ->causedBy($user)
+                    ->event('phone_changed')
+                    ->withProperties(['phone' => 'changed'])
+                    ->log('User phone number changed');
+            }
+
             return ['user' => $lockedUser->fresh()];
         });
 
         if (isset($result['error'])) {
             if ($result['error'] === 'invalid') {
                 $this->otpService->recordFailedVerification($data['phone'], 'login');
-            } else {
+            } elseif ($result['error'] !== 'expired') {
                 $this->otpService->clearFailedVerifications($data['phone'], 'login');
             }
 
@@ -442,18 +266,12 @@ class AuthController extends Controller
         }
 
         $result = DB::transaction(function () use ($data, $user, $phone): array {
-            $otp = Otp::query()
-                ->where('phone', $phone)
-                ->where('type', 'login')
-                ->where('used', false)
-                ->latest('id')
-                ->lockForUpdate()
-                ->first();
+            $otp = Otp::lockLatestUnusedForVerification($phone, 'login');
 
             if (! $otp) {
                 return ['error' => 'invalid'];
             }
-            if ($otp->expires_at->isPast()) {
+            if ($otp->isExpired()) {
                 $otp->update(['used' => true]);
 
                 return ['error' => 'expired'];
@@ -469,9 +287,6 @@ class AuthController extends Controller
             $photoPath = $lockedUser->profile_photo_path;
             $lockedUser->tokens()->delete();
             DB::table('sessions')->where('user_id', $lockedUser->id)->delete();
-            if (is_string($lockedUser->email)) {
-                DB::table('password_reset_tokens')->where('email', $lockedUser->email)->delete();
-            }
             $lockedUser->delete();
 
             return ['photo_path' => $photoPath];
@@ -480,7 +295,7 @@ class AuthController extends Controller
         if (isset($result['error'])) {
             if ($result['error'] === 'invalid') {
                 $this->otpService->recordFailedVerification($phone, 'login');
-            } else {
+            } elseif ($result['error'] !== 'expired') {
                 $this->otpService->clearFailedVerifications($phone, 'login');
             }
 
@@ -517,10 +332,24 @@ class AuthController extends Controller
             throw new RuntimeException('Could not store the uploaded profile photo.');
         }
 
-        $user->forceFill(['profile_photo_path' => $path])->saveOrFail();
+        try {
+            $user->forceFill(['profile_photo_path' => $path])->saveOrFail();
+        } catch (Throwable $exception) {
+            if (! Storage::disk('public')->delete($path)) {
+                Log::warning('Could not remove an uncommitted profile photo.', [
+                    'user_id' => $user->id,
+                    'path' => $path,
+                ]);
+            }
 
-        if (is_string($oldPath) && $oldPath !== $path) {
-            Storage::disk('public')->delete($oldPath);
+            throw $exception;
+        }
+
+        if (is_string($oldPath) && $oldPath !== $path && ! Storage::disk('public')->delete($oldPath)) {
+            Log::warning('Could not remove the previous profile photo.', [
+                'user_id' => $user->id,
+                'path' => $oldPath,
+            ]);
         }
 
         return response()->json(['user' => $user->fresh()]);

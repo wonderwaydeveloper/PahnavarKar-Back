@@ -43,4 +43,13 @@ return [
         'inactivity_warning_body_id' => env('MELIPAYAMAK_INACTIVITY_WARNING_BODY_ID'),
     ],
 
+    'sms' => [
+        'queue_enabled' => env('SMS_OTP_QUEUE_ENABLED', false),
+        'queue' => env('SMS_OTP_QUEUE', 'sms'),
+    ],
+
+    'expo_push' => [
+        'access_token' => env('EXPO_ACCESS_TOKEN'),
+    ],
+
 ];

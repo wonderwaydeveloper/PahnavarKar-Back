@@ -1,0 +1,16 @@
+[program:pahnavarkar-worker]
+process_name=%(program_name)s_%(process_num)02d
+directory=/var/www/pahnavarkar/current
+command=/usr/bin/php artisan queue:work database --queue=sms,default --sleep=3 --tries=3 --timeout=60 --max-jobs=1000 --max-time=3600
+user=www-data
+numprocs=1
+autostart=true
+autorestart=true
+startsecs=5
+stopasgroup=true
+killasgroup=true
+stopwaitsecs=70
+redirect_stderr=true
+stdout_logfile=/var/log/supervisor/pahnavarkar-worker.log
+stdout_logfile_maxbytes=20MB
+stdout_logfile_backups=5
