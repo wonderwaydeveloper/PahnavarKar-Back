@@ -4,8 +4,23 @@ import AdminMobileNavigation from '../../../Components/AdminMobileNavigation';
 import MultiSelectField from '../../../Components/MultiSelectField';
 import AdminSidebar from '../../../Components/AdminSidebar';
 import ThemeSwitcher from '../../../Components/ThemeSwitcher';
+import PersianDateTimeInput from '../../../Components/PersianDateTimeInput';
+import { formatPersianDate, formatPersianDateTime } from '../../../Utils/persian-date';
 
-const dateFormat = new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium' });
+const restrictionOptions = [
+    { key: 'financial', label: 'امور مالی', description: 'خرید، شارژ کیف پول، برداشت و تغییرات مالی' },
+    { key: 'profile', label: 'ویرایش پروفایل', description: 'تغییر اطلاعات و تصویر پروفایل' },
+    { key: 'security', label: 'امنیت حساب', description: 'تغییر شماره، دستگاه‌ها و ورود دومرحله‌ای' },
+];
+
+function toLocalDateTimeValue(date) {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function localDateTimeAfterDays(days) {
+    return toLocalDateTimeValue(new Date(Date.now() + days * 24 * 60 * 60 * 1000));
+}
 
 export default function Index({
     admin,
@@ -17,7 +32,14 @@ export default function Index({
     const { app, flash } = usePage().props;
     const [selectedUser, setSelectedUser] = useState(null);
     const [accessUser, setAccessUser] = useState(null);
-    const form = useForm({ is_active: false, reason: '' });
+    const form = useForm({
+        mode: 'suspended',
+        reason: '',
+        suspended_until: '',
+        restriction_capabilities: [],
+        restricted_until: '',
+        revoke_sessions: true,
+    });
     const accessForm = useForm({ role_ids: [] });
     const filterForm = useForm({ search: filters.search, status: filters.status });
     const activeOnPage = users.data.filter((user) => user.isActive).length;
@@ -33,9 +55,23 @@ export default function Index({
         router.get('/admin/users', filters, { preserveState: true, preserveScroll: true });
     }
 
-    function openStatusDialog(user) {
+    function openStatusDialog(user, mode = !user.isActive ? 'active' : 'suspended') {
         setSelectedUser(user);
-        form.setData({ is_active: !user.isActive, reason: '' });
+        const suspendedUntil = user.suspendedUntil ? new Date(user.suspendedUntil) : null;
+        form.setData({
+            mode,
+            reason: mode === 'restricted' ? user.restrictionReason || '' : user.statusReason || '',
+            suspended_until: mode === 'suspended' && suspendedUntil ? toLocalDateTimeValue(suspendedUntil) : '',
+            restriction_capabilities: mode === 'restricted' ? user.restrictedCapabilities || [] : [],
+            restricted_until: mode === 'restricted' && user.restrictedUntil
+                ? toLocalDateTimeValue(new Date(user.restrictedUntil))
+                : '',
+            revoke_sessions: mode === 'restricted'
+                ? Boolean(user.restrictionRevokesSessions)
+                : mode === 'suspended'
+                    ? user.suspensionRevokesSessions !== false
+                    : true,
+        });
         form.clearErrors();
     }
 
@@ -99,7 +135,7 @@ export default function Index({
                                     {[
                                         { label: 'کل حساب‌ها', value: users.total },
                                         { label: 'فعال در صفحه', value: activeOnPage },
-                                        { label: 'غیرفعال در صفحه', value: inactiveOnPage },
+                                        { label: 'تعلیق‌شده در صفحه', value: inactiveOnPage },
                                     ].map((stat) => (
                                         <div key={stat.label} className="min-w-0 rounded-2xl border border-slate-200/80 bg-slate-50/70 px-3 py-2.5 text-center sm:min-w-28 sm:px-4">
                                             <div className="text-lg font-bold tabular-nums text-slate-900">{new Intl.NumberFormat('fa-IR').format(stat.value)}</div>
@@ -138,7 +174,7 @@ export default function Index({
                                 >
                                     <option value="">همهٔ وضعیت‌ها</option>
                                     <option value="active">فعال</option>
-                                    <option value="inactive">غیرفعال</option>
+                                    <option value="inactive">تعلیق‌شده</option>
                                 </select>
                             </label>
                             <button type="submit" disabled={filterForm.processing} className="h-11 rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-wait disabled:opacity-60">
@@ -152,7 +188,7 @@ export default function Index({
                                     <h2 className="font-bold text-slate-900">فهرست کاربران</h2>
                                     <p className="mt-1 text-xs text-slate-500">{new Intl.NumberFormat('fa-IR').format(users.data.length)} کاربر در این صفحه از {new Intl.NumberFormat('fa-IR').format(users.total)} حساب</p>
                                 </div>
-                                {filters.status && <span className="w-fit rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-600">فیلتر: {filters.status === 'active' ? 'فعال' : 'غیرفعال'}</span>}
+                                {filters.status && <span className="w-fit rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-600">فیلتر: {filters.status === 'active' ? 'فعال' : 'تعلیق‌شده'}</span>}
                             </div>
                             {users.data.length === 0 ? (
                                 <div className="px-6 py-16 text-center">
@@ -178,6 +214,8 @@ export default function Index({
                                         <tbody className="divide-y divide-slate-100 text-xs text-slate-700 [&>tr>td]:px-5 [&>tr>td]:py-4">
                                             {users.data.map((user) => {
                                                 const canChangeStatus = !user.isPrivileged || canManageRoles;
+                                                const restrictedNames = (user.restrictedCapabilities || [])
+                                                    .map((key) => restrictionOptions.find((option) => option.key === key)?.label || key);
                                                 return (
                                                     <tr key={user.id} className="transition hover:bg-slate-50/70">
                                                         <td>
@@ -186,13 +224,21 @@ export default function Index({
                                                         </td>
                                                         <td>{user.roles.length ? user.roles.map((role) => role.nameFa || role.nameEn || role.key).join('، ') : '—'}</td>
                                                         <td>
-                                                            <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold ${user.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                                                                {user.isActive ? 'فعال' : 'غیرفعال'}
+                                                            <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold ${!user.isActive ? 'bg-rose-50 text-rose-700' : restrictedNames.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-700'}`}>
+                                                                {!user.isActive ? 'معلق' : restrictedNames.length ? 'محدود' : 'فعال'}
                                                             </span>
                                                             {!user.isActive && user.statusReason && <p className="mt-1 max-w-52 leading-5 text-slate-500">{user.statusReason}</p>}
+                                                            {!user.isActive && user.suspendedUntil && <p className="mt-1 max-w-52 leading-5 text-indigo-700">رفع تعلیق: {formatPersianDateTime(user.suspendedUntil)}</p>}
+                                                            {user.isActive && restrictedNames.length > 0 && (
+                                                                <>
+                                                                    <p className="mt-1 max-w-52 leading-5 text-amber-800">{restrictedNames.join('، ')}</p>
+                                                                    {user.restrictionReason && <p className="mt-1 max-w-52 leading-5 text-slate-500">{user.restrictionReason}</p>}
+                                                                    {user.restrictedUntil && <p className="mt-1 max-w-52 leading-5 text-indigo-700">پایان محدودیت: {formatPersianDateTime(user.restrictedUntil)}</p>}
+                                                                </>
+                                                            )}
                                                         </td>
                                                         <td className="whitespace-nowrap text-slate-500">
-                                                            {user.createdAt ? dateFormat.format(new Date(user.createdAt)) : '—'}
+                                                            {user.createdAt ? formatPersianDate(user.createdAt) : '—'}
                                                         </td>
                                                         <td>
                                                             <div className="flex flex-wrap gap-2">
@@ -207,9 +253,26 @@ export default function Index({
                                                                         onClick={() => openStatusDialog(user)}
                                                                         className={`rounded-xl px-3 py-2 text-xs font-semibold transition focus:outline-none focus:ring-4 ${user.isActive ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 focus:ring-rose-100' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus:ring-emerald-100'}`}
                                                                     >
-                                                                        {user.isActive ? 'غیرفعال‌کردن' : 'فعال‌سازی'}
+                                                                        {user.isActive ? 'تعلیق' : 'فعال‌سازی'}
                                                                     </button>
                                                                 ) : <span className="text-[11px] text-slate-400">نیازمند مجوز مدیریت نقش</span>}
+                                                                {user.isActive && canChangeStatus && (
+                                                                    <>
+                                                                        <button type="button" onClick={() => openStatusDialog(user, 'restricted')} className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 transition hover:bg-amber-100">
+                                                                            {restrictedNames.length ? 'ویرایش محدودیت' : 'محدودسازی بخشی'}
+                                                                        </button>
+                                                                        {restrictedNames.length > 0 && (
+                                                                            <button type="button" onClick={() => openStatusDialog(user, 'active')} className="rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100">
+                                                                                رفع محدودیت
+                                                                            </button>
+                                                                        )}
+                                                                    </>
+                                                                )}
+                                                                {!user.isActive && canChangeStatus && (
+                                                                    <button type="button" onClick={() => openStatusDialog(user, 'suspended')} className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 transition hover:bg-amber-100">
+                                                                        تغییر مهلت تعلیق
+                                                                    </button>
+                                                                )}
                                                             </div>
                                                         </td>
                                                     </tr>
@@ -221,6 +284,8 @@ export default function Index({
                                     <div className="grid gap-3 p-3 sm:p-4 md:hidden">
                                         {users.data.map((user) => {
                                             const canChangeStatus = !user.isPrivileged || canManageRoles;
+                                            const restrictedNames = (user.restrictedCapabilities || [])
+                                                .map((key) => restrictionOptions.find((option) => option.key === key)?.label || key);
                                             return (
                                                 <article key={user.id} className="rounded-2xl border border-slate-200/80 p-4">
                                                     <div className="flex items-start justify-between gap-3">
@@ -228,8 +293,8 @@ export default function Index({
                                                             <h3 className="truncate font-bold text-slate-900">{user.name}</h3>
                                                             <p className="mt-1 text-xs text-slate-500" dir="ltr">{user.phone || '—'}</p>
                                                         </div>
-                                                        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${user.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                                                            {user.isActive ? 'فعال' : 'غیرفعال'}
+                                                        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${!user.isActive ? 'bg-rose-50 text-rose-700' : restrictedNames.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-700'}`}>
+                                                            {!user.isActive ? 'معلق' : restrictedNames.length ? 'محدود' : 'فعال'}
                                                         </span>
                                                     </div>
                                                     <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3 text-xs">
@@ -239,9 +304,17 @@ export default function Index({
                                                         </div>
                                                         <div className="flex items-center justify-between gap-3">
                                                             <span className="text-slate-500">تاریخ عضویت</span>
-                                                            <span className="text-slate-600">{user.createdAt ? dateFormat.format(new Date(user.createdAt)) : '—'}</span>
+                                                            <span className="text-slate-600">{user.createdAt ? formatPersianDate(user.createdAt) : '—'}</span>
                                                         </div>
                                                         {!user.isActive && user.statusReason && <p className="rounded-xl bg-rose-50 px-3 py-2 leading-5 text-rose-700">{user.statusReason}</p>}
+                                                        {!user.isActive && user.suspendedUntil && <p className="rounded-xl bg-indigo-50 px-3 py-2 leading-5 text-indigo-700">رفع تعلیق: {formatPersianDateTime(user.suspendedUntil)}</p>}
+                                                        {user.isActive && restrictedNames.length > 0 && (
+                                                            <div className="rounded-xl bg-amber-50 px-3 py-2 leading-5 text-amber-900">
+                                                                <p className="font-semibold">{restrictedNames.join('، ')}</p>
+                                                                {user.restrictionReason && <p className="mt-1 text-amber-800">{user.restrictionReason}</p>}
+                                                                {user.restrictedUntil && <p className="mt-1 text-indigo-700">پایان محدودیت: {formatPersianDateTime(user.restrictedUntil)}</p>}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                     <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
                                                         {canManageRoles && !user.roles.some((role) => role.key === 'Owner') && (
@@ -250,13 +323,32 @@ export default function Index({
                                                             </button>
                                                         )}
                                                         {canChangeStatus ? (
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => openStatusDialog(user)}
-                                                                className={`min-h-10 rounded-xl px-3 py-2 text-xs font-semibold transition ${user.isActive ? 'bg-rose-50 text-rose-700 hover:bg-rose-100' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
-                                                            >
-                                                                {user.isActive ? 'غیرفعال‌کردن' : 'فعال‌سازی'}
-                                                            </button>
+                                                            <>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => openStatusDialog(user)}
+                                                                    className={`min-h-10 rounded-xl px-3 py-2 text-xs font-semibold transition ${user.isActive ? 'bg-rose-50 text-rose-700 hover:bg-rose-100' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
+                                                                >
+                                                                    {user.isActive ? 'تعلیق' : 'فعال‌سازی'}
+                                                                </button>
+                                                                {!user.isActive && (
+                                                                    <button type="button" onClick={() => openStatusDialog(user, 'suspended')} className="min-h-10 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 transition hover:bg-amber-100">
+                                                                        تغییر مهلت تعلیق
+                                                                    </button>
+                                                                )}
+                                                                {user.isActive && (
+                                                                    <>
+                                                                        <button type="button" onClick={() => openStatusDialog(user, 'restricted')} className="min-h-10 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 transition hover:bg-amber-100">
+                                                                            {restrictedNames.length ? 'ویرایش محدودیت' : 'محدودسازی بخشی'}
+                                                                        </button>
+                                                                        {restrictedNames.length > 0 && (
+                                                                            <button type="button" onClick={() => openStatusDialog(user, 'active')} className="min-h-10 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100">
+                                                                                رفع محدودیت
+                                                                            </button>
+                                                                        )}
+                                                                    </>
+                                                                )}
+                                                            </>
                                                         ) : <span className="self-center text-[11px] text-slate-400">نیازمند مجوز مدیریت نقش</span>}
                                                     </div>
                                                 </article>
@@ -291,35 +383,97 @@ export default function Index({
                 <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4" role="presentation" onMouseDown={(event) => {
                     if (event.target === event.currentTarget && !form.processing) setSelectedUser(null);
                 }}>
-                    <form onSubmit={updateStatus} role="dialog" aria-modal="true" aria-labelledby="user-status-title" className="admin-modal w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl sm:p-7">
+                    <form onSubmit={updateStatus} role="dialog" aria-modal="true" aria-labelledby="user-status-title" className="admin-modal max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-7">
                         <h2 id="user-status-title" className="text-lg font-bold text-slate-900">
-                            {form.data.is_active ? 'فعال‌سازی حساب' : 'غیرفعال‌سازی حساب'}
+                            {form.data.mode === 'active'
+                                ? selectedUser.isActive ? 'رفع محدودیت حساب' : 'فعال‌سازی حساب'
+                                : form.data.mode === 'restricted'
+                                    ? 'محدودسازی بخشی حساب'
+                                    : selectedUser.isActive ? 'تعلیق کامل حساب' : 'تنظیم تعلیق حساب'}
                         </h2>
                         <p className="mt-2 text-sm leading-7 text-slate-600">
-                            {form.data.is_active
-                                ? `دسترسی ${selectedUser.name} دوباره فعال می‌شود.`
-                                : `دسترسی ${selectedUser.name} قطع و نشست‌ها و توکن‌های فعال لغو می‌شوند. سوابق حساب حذف نخواهد شد.`}
+                            {form.data.mode === 'active'
+                                ? selectedUser.isActive ? `محدودیت‌های ${selectedUser.name} برداشته می‌شود و حساب فعال می‌ماند.` : `دسترسی ${selectedUser.name} دوباره فعال می‌شود.`
+                                : form.data.mode === 'restricted'
+                                    ? 'فقط قابلیت‌های انتخاب‌شده مسدود می‌شوند؛ مشاهدهٔ اطلاعات و خروج از حساب همچنان در دسترس می‌ماند.'
+                                    : `دسترسی ${selectedUser.name} به‌طور کامل متوقف می‌شود. سیاست حفظ یا لغو نشست‌ها را انتخاب کنید. تمدید خودکار کیف پول در زمان تعلیق متوقف می‌شود.`}
                         </p>
-                        {!form.data.is_active && (
-                            <label className="mt-5 block">
-                                <span className="mb-2 block text-xs font-semibold text-slate-700">علت غیرفعال‌سازی</span>
-                                <textarea
-                                    value={form.data.reason}
-                                    onChange={(event) => form.setData('reason', event.target.value)}
-                                    minLength={5}
-                                    maxLength={500}
-                                    required
-                                    rows={3}
-                                    className="w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm leading-6 text-slate-800 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100"
-                                />
-                                {form.errors.reason && <span className="mt-1 block text-xs text-rose-600">{form.errors.reason}</span>}
-                            </label>
+                        {form.data.mode === 'suspended' && (
+                            <>
+                                <label className="mt-5 block">
+                                    <span className="mb-2 block text-xs font-semibold text-slate-700">مدت تعلیق</span>
+                                    <div className="mb-3 flex flex-wrap gap-2">
+                                        <button type="button" onClick={() => form.setData('suspended_until', '')} className={`rounded-lg border px-3 py-2 text-xs font-medium ${!form.data.suspended_until ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600'}`}>تا رفع دستی</button>
+                                        {[1, 3, 7, 30].map((days) => (
+                                            <button key={days} type="button" onClick={() => form.setData('suspended_until', localDateTimeAfterDays(days))} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50">{days} روز</button>
+                                        ))}
+                                    </div>
+                                    <PersianDateTimeInput includeTime value={form.data.suspended_until || ''} onChange={(value) => form.setData('suspended_until', value)} />
+                                    <span className="mt-1 block text-[11px] leading-5 text-slate-500">خالی‌گذاشتن یعنی تعلیق تا فعال‌سازی دستی.</span>
+                                    {form.errors.suspended_until && <span className="mt-1 block text-xs text-rose-600">{form.errors.suspended_until}</span>}
+                                </label>
+                                <label className="mt-4 flex items-start gap-3 rounded-xl bg-slate-50 p-3 text-xs leading-6 text-slate-700">
+                                    <input type="checkbox" checked={form.data.revoke_sessions} onChange={(event) => form.setData('revoke_sessions', event.target.checked)} className="mt-1 size-4 accent-rose-600" />
+                                    <span><strong>لغو نشست‌ها و توکن‌های فعال</strong><br />در صورت برداشتن این گزینه، نشست‌ها حفظ می‌شوند اما تا پایان تعلیق اجازهٔ استفاده از سامانه را ندارند.</span>
+                                </label>
+                                <label className="mt-5 block">
+                                    <span className="mb-2 block text-xs font-semibold text-slate-700">علت تعلیق</span>
+                                    <textarea value={form.data.reason} onChange={(event) => form.setData('reason', event.target.value)} minLength={5} maxLength={500} required rows={3} className="w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm leading-6 text-slate-800 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100" />
+                                    {form.errors.reason && <span className="mt-1 block text-xs text-rose-600">{form.errors.reason}</span>}
+                                </label>
+                            </>
+                        )}
+                        {form.data.mode === 'restricted' && (
+                            <>
+                                <fieldset className="mt-5">
+                                    <legend className="mb-2 text-xs font-semibold text-slate-700">قابلیت‌های محدودشده</legend>
+                                    <div className="space-y-2">
+                                        {restrictionOptions.map((option) => (
+                                            <label key={option.key} className="flex items-start gap-3 rounded-xl border border-slate-200 p-3 text-xs">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={form.data.restriction_capabilities.includes(option.key)}
+                                                    onChange={(event) => form.setData('restriction_capabilities', event.target.checked
+                                                        ? [...form.data.restriction_capabilities, option.key]
+                                                        : form.data.restriction_capabilities.filter((key) => key !== option.key))}
+                                                    className="mt-1 size-4 accent-amber-600"
+                                                />
+                                                <span><strong className="text-slate-800">{option.label}</strong><span className="mt-0.5 block text-slate-500">{option.description}</span></span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                    {form.errors.restriction_capabilities && <span className="mt-1 block text-xs text-rose-600">{form.errors.restriction_capabilities}</span>}
+                                    {form.errors['restriction_capabilities.0'] && <span className="mt-1 block text-xs text-rose-600">{form.errors['restriction_capabilities.0']}</span>}
+                                </fieldset>
+                                <label className="mt-5 block">
+                                    <span className="mb-2 block text-xs font-semibold text-slate-700">پایان محدودیت</span>
+                                    <div className="mb-3 flex flex-wrap gap-2">
+                                        <button type="button" onClick={() => form.setData('restricted_until', '')} className={`rounded-lg border px-3 py-2 text-xs font-medium ${!form.data.restricted_until ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600'}`}>تا رفع دستی</button>
+                                        {[1, 3, 7, 30].map((days) => (
+                                            <button key={days} type="button" onClick={() => form.setData('restricted_until', localDateTimeAfterDays(days))} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50">{days} روز</button>
+                                        ))}
+                                    </div>
+                                    <PersianDateTimeInput includeTime value={form.data.restricted_until} onChange={(value) => form.setData('restricted_until', value)} />
+                                    <span className="mt-1 block text-[11px] leading-5 text-slate-500">خالی‌گذاشتن یعنی محدودیت تا رفع دستی ادامه دارد.</span>
+                                    {form.errors.restricted_until && <span className="mt-1 block text-xs text-rose-600">{form.errors.restricted_until}</span>}
+                                </label>
+                                <label className="mt-4 flex items-start gap-3 rounded-xl bg-slate-50 p-3 text-xs leading-6 text-slate-700">
+                                    <input type="checkbox" checked={form.data.revoke_sessions} onChange={(event) => form.setData('revoke_sessions', event.target.checked)} className="mt-1 size-4 accent-amber-600" />
+                                    <span><strong>لغو نشست‌ها و توکن‌های فعال</strong><br />محدودیت‌های انتخاب‌شده حتی پس از ورود مجدد نیز اعمال می‌شوند.</span>
+                                </label>
+                                <label className="mt-5 block">
+                                    <span className="mb-2 block text-xs font-semibold text-slate-700">علت محدودسازی</span>
+                                    <textarea value={form.data.reason} onChange={(event) => form.setData('reason', event.target.value)} minLength={5} maxLength={500} required rows={3} className="w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm leading-6 text-slate-800 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100" />
+                                    {form.errors.reason && <span className="mt-1 block text-xs text-rose-600">{form.errors.reason}</span>}
+                                </label>
+                            </>
                         )}
                         {form.errors.is_active && <p role="alert" className="mt-3 text-xs leading-6 text-rose-700">{form.errors.is_active}</p>}
+                        {form.errors.mode && <p role="alert" className="mt-3 text-xs leading-6 text-rose-700">{form.errors.mode}</p>}
                         <div className="mt-6 flex justify-end gap-3">
                             <button type="button" onClick={() => setSelectedUser(null)} disabled={form.processing} className="h-10 rounded-xl border border-slate-200 px-4 text-xs font-semibold text-slate-600 disabled:opacity-50">انصراف</button>
-                            <button type="submit" disabled={form.processing} className={`h-10 rounded-xl px-4 text-xs font-semibold text-white disabled:cursor-wait disabled:opacity-60 ${form.data.is_active ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}`}>
-                                {form.processing ? 'در حال ثبت…' : form.data.is_active ? 'تأیید فعال‌سازی' : 'تأیید غیرفعال‌سازی'}
+                            <button type="submit" disabled={form.processing} className={`h-10 rounded-xl px-4 text-xs font-semibold text-white disabled:cursor-wait disabled:opacity-60 ${form.data.mode === 'active' ? 'bg-emerald-600 hover:bg-emerald-700' : form.data.mode === 'restricted' ? 'bg-amber-600 hover:bg-amber-700' : 'bg-rose-600 hover:bg-rose-700'}`}>
+                                {form.processing ? 'در حال ثبت…' : form.data.mode === 'active' ? selectedUser.isActive ? 'رفع محدودیت' : 'تأیید فعال‌سازی' : form.data.mode === 'restricted' ? 'اعمال محدودیت' : selectedUser.isActive ? 'تأیید تعلیق' : 'ذخیرهٔ تعلیق'}
                             </button>
                         </div>
                     </form>

@@ -29,4 +29,20 @@ class LocalLogSmsProvider implements SmsProvider
             'grace_days' => $graceDays,
         ]);
     }
+
+    public function canSendTestMessage(): bool
+    {
+        return app()->environment('local') && config('services.melipayamak.local_log_enabled') === true;
+    }
+
+    public function sendTestMessage(string $phone): void
+    {
+        if (! $this->canSendTestMessage()) {
+            throw new SmsDeliveryException('Local SMS logging is only available when explicitly enabled locally.');
+        }
+
+        Log::info('Local SMS provider test requested.', [
+            'phone_last4' => substr($phone, -4),
+        ]);
+    }
 }

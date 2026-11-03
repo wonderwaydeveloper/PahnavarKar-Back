@@ -13,5 +13,6 @@ class PaymentRequest
         public readonly string $idempotencyKey,
         public readonly string $description = 'Online payment',
         public readonly string $environment = 'sandbox',
+        public readonly ?string $merchantId = null,
     ) {}
 }

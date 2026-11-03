@@ -48,6 +48,7 @@ class WithdrawalRequestPolicyTest extends TestCase
         $user = User::factory()->create([
             'is_active' => true,
             'wallet_balance' => 1000000,
+            'bank_account_iban' => 'IR490000000000000000000000',
         ]);
 
         $today = now()->setTime(12, 0);
@@ -86,6 +87,7 @@ class WithdrawalRequestPolicyTest extends TestCase
         $user = User::factory()->create([
             'is_active' => true,
             'wallet_balance' => 999,
+            'bank_account_iban' => 'IR490000000000000000000000',
         ]);
         $this->actingAs($user, 'sanctum');
 
@@ -114,10 +116,12 @@ class WithdrawalRequestPolicyTest extends TestCase
         $user = User::factory()->create([
             'is_active' => true,
             'wallet_balance' => 300000,
+            'bank_account_iban' => 'IR490000000000000000000000',
         ]);
         $otherUser = User::factory()->create([
             'is_active' => true,
             'wallet_balance' => 300000,
+            'bank_account_iban' => 'IR490000000000000000000000',
         ]);
         $key = (string) Str::uuid();
         $payload = ['amount' => 100000, 'idempotency_key' => $key];
@@ -125,6 +129,7 @@ class WithdrawalRequestPolicyTest extends TestCase
         $first = $this->actingAs($user, 'sanctum')
             ->postJson('/api/v1/auth/wallet/withdrawal-requests', $payload)
             ->assertCreated()
+            ->assertJsonPath('withdrawal_request.payout_mode', 'manual')
             ->assertJsonMissingPath('withdrawal_request.idempotency_key');
         $firstId = $first->json('withdrawal_request.id');
 
@@ -147,6 +152,10 @@ class WithdrawalRequestPolicyTest extends TestCase
         $this->assertSame(200000, $otherUser->fresh()->wallet_balance);
         $this->assertDatabaseCount('withdrawal_requests', 2);
         $this->assertDatabaseCount('transactions', 2);
+        $this->assertSame(
+            'مبلغ درخواست برداشت تا زمان بررسی از موجودی قابل‌استفاده رزرو شد.',
+            $user->transactions()->sole()->description,
+        );
         $this->assertSame(1, WithdrawalRequest::query()->where('user_id', $otherUser->getKey())->count());
     }
 
@@ -155,7 +164,10 @@ class WithdrawalRequestPolicyTest extends TestCase
         config(['wallet.withdrawals.enabled' => true]);
         Cache::forget('admin-runtime-settings:v2:wallet_withdrawals');
 
-        $user = User::factory()->create(['wallet_balance' => 200000]);
+        $user = User::factory()->create([
+            'wallet_balance' => 200000,
+            'bank_account_iban' => 'IR490000000000000000000000',
+        ]);
         DB::statement(
             "CREATE TRIGGER fail_withdrawal_request_insert BEFORE INSERT ON withdrawal_requests
              BEGIN SELECT RAISE(ABORT, 'injected withdrawal insert failure'); END",

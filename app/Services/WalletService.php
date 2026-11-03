@@ -4,14 +4,16 @@ namespace App\Services;
 
 use App\Exceptions\InsufficientWalletBalanceException;
 use App\Exceptions\WalletOperationConflictException;
-use App\Models\Transaction;
 use App\Models\PaymentOrder;
+use App\Models\Transaction;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class WalletService
 {
+    public function __construct(private readonly SubscriptionPlanName $planNames) {}
+
     public function recordExternalPurchase(
         User $user,
         PaymentOrder $order,
@@ -52,7 +54,8 @@ class WalletService
                 'gateway' => $gateway,
                 'reference_id' => $referenceId,
                 'idempotency_key' => (string) Str::uuid(),
-                'description' => 'Subscription order '.$order->order_reference,
+                'description' => 'پرداخت اشتراک '.$this->planNames->forKey((string) $order->plan_key)
+                    .' از طریق درگاه؛ سفارش '.$order->order_reference,
                 'expires_at' => now()->addHours(24),
             ]);
         });
@@ -102,7 +105,7 @@ class WalletService
                 'gateway' => $gateway,
                 'reference_id' => $referenceId,
                 'idempotency_key' => (string) Str::uuid(),
-                'description' => $description,
+                'description' => $description ?? 'افزایش موجودی کیف پول پس از تأیید پرداخت درگاه.',
                 'expires_at' => now()->addHours(24),
             ]);
         });
@@ -166,19 +169,19 @@ class WalletService
                 'currency' => config('wallet.currency'),
                 'reference_id' => $purchaseReference,
                 'idempotency_key' => $idempotencyKey,
-                'description' => $description,
+                'description' => $description ?? 'مبلغ از موجودی کیف پول برای خرید کسر شد.',
                 'expires_at' => now()->addHours(24),
             ]);
         });
     }
 
-    public function refundPurchase(Transaction $debit): Transaction
+    public function refundPurchase(Transaction $debit, ?string $description = null): Transaction
     {
         if ($debit->type !== 'debit') {
             throw new WalletOperationConflictException('فقط تراکنش خرید کیف پول قابل بازپرداخت است.');
         }
 
-        return DB::transaction(function () use ($debit): Transaction {
+        return DB::transaction(function () use ($debit, $description): Transaction {
             $lockedUser = User::query()
                 ->whereKey($debit->user_id)
                 ->lockForUpdate()
@@ -213,7 +216,56 @@ class WalletService
                 'currency' => $lockedDebit->currency,
                 'reference_id' => $lockedDebit->reference_id,
                 'idempotency_key' => (string) Str::uuid(),
-                'description' => 'Refund for purchase '.$lockedDebit->getKey(),
+                'description' => $description ?? 'به‌دلیل ناموفق‌شدن خرید، مبلغ کسرشده به کیف پول بازگردانده شد.',
+                'expires_at' => now()->addHours(24),
+            ]);
+        });
+    }
+
+    public function refundSubscriptionPaymentToWallet(
+        Transaction $payment,
+        ?string $description = null,
+    ): Transaction {
+        if ($payment->type !== 'subscription') {
+            throw new WalletOperationConflictException('فقط پرداخت درگاهی اشتراک قابل بازپرداخت به کیف پول است.');
+        }
+
+        return DB::transaction(function () use ($payment, $description): Transaction {
+            $lockedUser = User::query()
+                ->whereKey($payment->user_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $lockedPayment = Transaction::query()
+                ->whereKey($payment->getKey())
+                ->where('user_id', $lockedUser->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $existingRefund = Transaction::query()
+                ->where('reverses_transaction_id', $lockedPayment->getKey())
+                ->first();
+            if ($existingRefund) {
+                return $existingRefund;
+            }
+
+            if ($lockedPayment->status !== 'succeeded') {
+                throw new WalletOperationConflictException('پرداخت درگاهی در وضعیت قابل بازپرداخت نیست.');
+            }
+
+            $newBalance = $this->addToBalance((int) $lockedUser->wallet_balance, (int) $lockedPayment->amount);
+            $lockedUser->forceFill(['wallet_balance' => $newBalance])->saveOrFail();
+            $lockedPayment->forceFill(['status' => 'refunded'])->saveOrFail();
+
+            return $lockedUser->transactions()->create([
+                'reverses_transaction_id' => $lockedPayment->getKey(),
+                'type' => 'refund',
+                'status' => 'succeeded',
+                'amount' => $lockedPayment->amount,
+                'balance_after' => $newBalance,
+                'currency' => $lockedPayment->currency,
+                'reference_id' => $lockedPayment->reference_id,
+                'idempotency_key' => (string) Str::uuid(),
+                'description' => $description ?? 'مبلغ پرداخت‌شده برای اشتراک به کیف پول بازگردانده شد.',
                 'expires_at' => now()->addHours(24),
             ]);
         });
@@ -257,7 +309,7 @@ class WalletService
                 'currency' => $lockedHold->currency,
                 'reference_id' => $lockedHold->reference_id,
                 'idempotency_key' => (string) Str::uuid(),
-                'description' => 'Rejected withdrawal request released',
+                'description' => 'به‌دلیل رد درخواست برداشت، مبلغ رزروشده به موجودی کیف پول بازگردانده شد.',
                 'expires_at' => now()->addHours(24),
             ]);
         });

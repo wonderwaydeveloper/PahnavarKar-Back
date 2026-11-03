@@ -22,6 +22,7 @@ config([
     'database.connections.mysql.password' => (string) getenv('DB_PASSWORD'),
     'cache.default' => 'array',
     'payment.default' => 'concurrency-test',
+    'payment.min_top_up' => 1,
     'payment.failover' => [],
     'payment.gateways.concurrency-test.class' => ConcurrentPaymentGateway::class,
     'payment.gateways.concurrency-test.enabled' => true,

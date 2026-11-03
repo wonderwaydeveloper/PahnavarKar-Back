@@ -12,6 +12,7 @@ return [
         'connect_timeout' => (int) env('PAYMENT_CONNECT_TIMEOUT', 5),
         'timeout' => (int) env('PAYMENT_TIMEOUT', 15),
     ],
+    'min_top_up' => (int) (env('PAYMENT_MIN_TOP_UP') ?: 10000),
     'max_top_up' => (int) (env('PAYMENT_MAX_TOP_UP') ?: 100000000),
     'default' => env('PAYMENT_GATEWAY', 'zarinpal'),
     'app_return_url' => env('PAYMENT_APP_RETURN_URL', 'pahnavarkar://payment-return'),

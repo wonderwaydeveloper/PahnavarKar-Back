@@ -25,8 +25,10 @@ class AdminPaymentOrderController extends Controller
                 'user:id,name,phone',
                 'attempts:id,payment_order_id,gateway,status,amount,failure_code,created_at',
                 'walletTransaction:id,type,status,amount',
+                'walletTransaction.refund:id,reverses_transaction_id,type,status,amount,gateway,reference_id',
                 'refundTransaction:id,type,status,amount',
                 'transaction:id,type,status,amount,gateway,reference_id',
+                'transaction.refund:id,reverses_transaction_id,type,status,amount,gateway,reference_id',
                 'subscription:id,plan_key,type,status,starts_at,ends_at',
             ])
             ->when(isset($filters['user_id']), fn ($query) => $query->where('user_id', $filters['user_id']))
@@ -34,45 +36,57 @@ class AdminPaymentOrderController extends Controller
             ->when(isset($filters['kind']), fn ($query) => $query->where('kind', $filters['kind']))
             ->latest('id')
             ->paginate((int) ($filters['per_page'] ?? 20))
-            ->through(fn (PaymentOrder $order): array => [
-                'id' => $order->getKey(),
-                'reference' => $order->order_reference,
-                'kind' => $order->kind,
-                'plan_key' => $order->plan_key,
-                'status' => $order->status,
-                'failure_code' => $order->failure_code,
-                'gross_amount' => (int) $order->gross_amount,
-                'discount_amount' => (int) $order->discount_amount,
-                'wallet_amount' => (int) $order->wallet_amount,
-                'gateway_amount' => (int) $order->gateway_amount,
-                'currency' => $order->currency,
-                'created_at' => $order->created_at?->toISOString(),
-                'completed_at' => $order->completed_at?->toISOString(),
-                'user' => $order->user ? [
-                    'id' => $order->user->getKey(),
-                    'name' => $order->user->name,
-                    'phone' => $order->user->phone,
-                ] : null,
-                'attempts' => $order->attempts->map(fn ($attempt): array => [
-                    'id' => $attempt->getKey(),
-                    'gateway' => $attempt->gateway,
-                    'status' => $attempt->status,
-                    'amount' => (int) $attempt->amount,
-                    'failure_code' => $attempt->failure_code,
-                    'created_at' => $attempt->created_at?->toISOString(),
-                ])->values(),
-                'wallet_transaction' => $this->transactionSummary($order->walletTransaction),
-                'refund_transaction' => $this->transactionSummary($order->refundTransaction),
-                'gateway_transaction' => $this->transactionSummary($order->transaction),
-                'subscription' => $order->subscription ? [
-                    'id' => $order->subscription->getKey(),
-                    'plan_key' => $order->subscription->plan_key,
-                    'type' => $order->subscription->type,
-                    'status' => $order->subscription->status,
-                    'starts_at' => $order->subscription->starts_at?->toISOString(),
-                    'ends_at' => $order->subscription->ends_at?->toISOString(),
-                ] : null,
-            ])
+            ->through(function (PaymentOrder $order): array {
+                $refundTransactions = collect([
+                    $order->walletTransaction?->refund,
+                    $order->transaction?->refund,
+                    $order->refundTransaction,
+                ])->filter()->unique('id')->values();
+
+                return [
+                    'id' => $order->getKey(),
+                    'reference' => $order->order_reference,
+                    'kind' => $order->kind,
+                    'plan_key' => $order->plan_key,
+                    'status' => $order->status,
+                    'failure_code' => $order->failure_code,
+                    'gross_amount' => (int) $order->gross_amount,
+                    'discount_amount' => (int) $order->discount_amount,
+                    'wallet_amount' => (int) $order->wallet_amount,
+                    'gateway_amount' => (int) $order->gateway_amount,
+                    'refunded_amount' => (int) $refundTransactions->sum('amount'),
+                    'currency' => $order->currency,
+                    'created_at' => $order->created_at?->toISOString(),
+                    'completed_at' => $order->completed_at?->toISOString(),
+                    'user' => $order->user ? [
+                        'id' => $order->user->getKey(),
+                        'name' => $order->user->name,
+                        'phone' => $order->user->phone,
+                    ] : null,
+                    'attempts' => $order->attempts->map(fn ($attempt): array => [
+                        'id' => $attempt->getKey(),
+                        'gateway' => $attempt->gateway,
+                        'status' => $attempt->status,
+                        'amount' => (int) $attempt->amount,
+                        'failure_code' => $attempt->failure_code,
+                        'created_at' => $attempt->created_at?->toISOString(),
+                    ])->values(),
+                    'wallet_transaction' => $this->transactionSummary($order->walletTransaction),
+                    'refund_transaction' => $this->transactionSummary($order->refundTransaction),
+                    'refund_transactions' => $refundTransactions
+                        ->map(fn (Transaction $transaction): ?array => $this->transactionSummary($transaction))
+                        ->values(),
+                    'gateway_transaction' => $this->transactionSummary($order->transaction),
+                    'subscription' => $order->subscription ? [
+                        'id' => $order->subscription->getKey(),
+                        'plan_key' => $order->subscription->plan_key,
+                        'type' => $order->subscription->type,
+                        'status' => $order->subscription->status,
+                        'starts_at' => $order->subscription->starts_at?->toISOString(),
+                        'ends_at' => $order->subscription->ends_at?->toISOString(),
+                    ] : null,
+                ];
+            })
             ->withQueryString();
 
         return response()->json($orders);

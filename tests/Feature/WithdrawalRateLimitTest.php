@@ -34,6 +34,7 @@ class WithdrawalRateLimitTest extends TestCase
         $user = User::factory()->create([
             'is_active' => true,
             'wallet_balance' => 1000000,
+            'bank_account_iban' => 'IR490000000000000000000000',
         ]);
         $this->actingAs($user, 'sanctum');
 
@@ -167,6 +168,10 @@ class WithdrawalRateLimitTest extends TestCase
 
     private function createPendingWithdrawal(User $user): WithdrawalRequest
     {
+        if (! $user->bank_account_iban) {
+            $user->forceFill(['bank_account_iban' => 'IR490000000000000000000000'])->save();
+        }
+
         return app(WithdrawalRequestService::class)->create(
             $user,
             1000,

@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\User;
+use App\Services\Auth\AccountDeletionGuard;
 use App\Services\Auth\InactivityWarningDeliveryConfiguration;
 use App\Services\Auth\SmsProvider;
 use Illuminate\Console\Command;
@@ -20,14 +21,15 @@ class ProcessInactiveAccounts extends Command
     public function handle(
         SmsProvider $smsProvider,
         InactivityWarningDeliveryConfiguration $deliveryConfiguration,
+        AccountDeletionGuard $deletionGuard,
     ): int {
         User::query()
             ->whereNotNull('inactivity_deletion_period_months')
             ->orderBy('id')
             ->select(['id'])
-            ->chunkById(100, function ($users) use ($smsProvider, $deliveryConfiguration): void {
+            ->chunkById(100, function ($users) use ($smsProvider, $deliveryConfiguration, $deletionGuard): void {
                 foreach ($users as $user) {
-                    $this->processUser((int) $user->id, $smsProvider, $deliveryConfiguration);
+                    $this->processUser((int) $user->id, $smsProvider, $deliveryConfiguration, $deletionGuard);
                 }
             });
 
@@ -38,6 +40,7 @@ class ProcessInactiveAccounts extends Command
         int $userId,
         SmsProvider $smsProvider,
         InactivityWarningDeliveryConfiguration $deliveryConfiguration,
+        AccountDeletionGuard $deletionGuard,
     ): void {
         $user = User::query()->find($userId);
         if (! $user) {
@@ -84,7 +87,7 @@ class ProcessInactiveAccounts extends Command
         }
 
         if ($this->isEligibleForDeletion($user)) {
-            $this->deleteAccount($userId);
+            $this->deleteAccount($userId, $deletionGuard);
         }
     }
 
@@ -125,12 +128,16 @@ class ProcessInactiveAccounts extends Command
         }
     }
 
-    private function deleteAccount(int $userId): void
+    private function deleteAccount(int $userId, AccountDeletionGuard $deletionGuard): void
     {
-        $photoPath = DB::transaction(function () use ($userId): ?string {
+        $result = DB::transaction(function () use ($userId, $deletionGuard): array {
             $user = User::query()->lockForUpdate()->find($userId);
             if (! $user || ! $this->isEligibleForDeletion($user)) {
-                return null;
+                return ['photo_path' => null, 'blocked' => false];
+            }
+
+            if ($deletionGuard->hasUnresolvedFinancialOperations($userId)) {
+                return ['photo_path' => null, 'blocked' => true];
             }
 
             $path = $user->profile_photo_path;
@@ -138,13 +145,19 @@ class ProcessInactiveAccounts extends Command
             DB::table('sessions')->where('user_id', $user->id)->delete();
             $user->delete();
 
-            return $path;
+            return ['photo_path' => $path, 'blocked' => false];
         });
 
-        if (is_string($photoPath) && ! Storage::disk('public')->delete($photoPath)) {
+        if ($result['blocked']) {
+            Log::notice('Inactive account deletion was deferred because financial operations are unresolved.', [
+                'user_id' => $userId,
+            ]);
+        }
+
+        if (is_string($result['photo_path']) && ! Storage::disk('public')->delete($result['photo_path'])) {
             Log::warning('Could not remove profile photo after inactivity-based account deletion.', [
                 'user_id' => $userId,
-                'path' => $photoPath,
+                'path' => $result['photo_path'],
             ]);
         }
     }

@@ -150,6 +150,7 @@ class ActivityLogRedactionTest extends TestCase
             'idempotency_key' => (string) Str::uuid(),
             'expires_at' => $expiresAt,
         ]);
+        $gatewayMerchantId = (string) Str::uuid();
         $paymentAttempt = PaymentAttempt::query()->create([
             'user_id' => $user->getKey(),
             'payment_order_id' => $paymentOrder->getKey(),
@@ -157,6 +158,7 @@ class ActivityLogRedactionTest extends TestCase
             'idempotency_key' => (string) Str::uuid(),
             'gateway' => 'zarinpal',
             'gateway_environment' => 'sandbox',
+            'gateway_merchant_id' => $gatewayMerchantId,
             'amount' => 5000,
             'currency' => 'TOMAN',
             'status' => 'pending',
@@ -189,7 +191,7 @@ class ActivityLogRedactionTest extends TestCase
             Transaction::class => ['type', 'status', 'amount', 'balance_after', 'currency'],
             DiscountCode::class => [
                 'code', 'type', 'value', 'min_order_amount', 'max_discount', 'usage_limit',
-                'usage_count', 'user_id', 'starts_at', 'expires_at', 'is_active',
+                'usage_count', 'user_id', 'is_user_restricted', 'starts_at', 'expires_at', 'is_active',
             ],
             PaymentOrder::class => [
                 'kind', 'subscription_change_type', 'plan_key', 'duration_days', 'discount_amount',
@@ -225,6 +227,7 @@ class ActivityLogRedactionTest extends TestCase
             $idempotencyKey,
             'gateway-reference-secret',
             'provider-reference-secret',
+            $gatewayMerchantId,
             'redirect-secret',
             'payout-reference-secret',
             'private review note',

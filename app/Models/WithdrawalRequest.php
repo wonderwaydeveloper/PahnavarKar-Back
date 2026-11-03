@@ -15,6 +15,7 @@ class WithdrawalRequest extends Model
         'user_id',
         'hold_transaction_id',
         'reviewed_by',
+        'paid_by',
         'request_reference',
         'idempotency_key',
         'amount',
@@ -22,6 +23,10 @@ class WithdrawalRequest extends Model
         'status',
         'review_note',
         'payout_reference',
+        'bank_account_iban',
+        'bank_account_card_number',
+        'payout_method',
+        'payout_mode',
         'reviewed_at',
         'paid_at',
         'idempotency_expires_at',
@@ -46,6 +51,11 @@ class WithdrawalRequest extends Model
         return $this->belongsTo(User::class, 'reviewed_by');
     }
 
+    public function paidBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'paid_by');
+    }
+
     public function holdTransaction(): BelongsTo
     {
         return $this->belongsTo(Transaction::class, 'hold_transaction_id');
@@ -57,10 +67,13 @@ class WithdrawalRequest extends Model
             'user_id' => 'integer',
             'hold_transaction_id' => 'integer',
             'reviewed_by' => 'integer',
+            'paid_by' => 'integer',
             'amount' => 'integer',
             'reviewed_at' => 'datetime',
             'paid_at' => 'datetime',
             'idempotency_expires_at' => 'datetime',
+            'bank_account_iban' => 'encrypted',
+            'bank_account_card_number' => 'encrypted',
         ];
     }
 }

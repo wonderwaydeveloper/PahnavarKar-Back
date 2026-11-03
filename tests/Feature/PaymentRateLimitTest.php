@@ -60,6 +60,8 @@ class PaymentRateLimitTest extends TestCase
             'credit_amount',
             'discount_amount',
             'payable_amount',
+            'wallet_amount',
+            'gateway_amount',
             'duration_days',
             'change_type',
             'source_subscription_id',
@@ -110,6 +112,8 @@ class PaymentRateLimitTest extends TestCase
             'credit_amount',
             'discount_amount',
             'payable_amount',
+            'wallet_amount',
+            'gateway_amount',
             'duration_days',
             'change_type',
             'source_subscription_id',
@@ -156,8 +160,8 @@ class PaymentRateLimitTest extends TestCase
     public function test_callback_rate_limit_blocks_request_121_without_reverifying_or_duplicating_credit(): void
     {
         $user = User::factory()->create(['wallet_balance' => 500]);
-        $attempt = $this->createZarinpalAttempt($user, 'AUTH-CALLBACK-RATE-LIMIT');
         $this->configureZarinpalCallback();
+        $attempt = $this->createZarinpalAttempt($user, 'AUTH-CALLBACK-RATE-LIMIT');
         Http::fake([
             'https://sandbox.example/api/payment/verify.json' => Http::response([
                 'data' => ['code' => 100, 'ref_id' => 567890],
@@ -197,8 +201,8 @@ class PaymentRateLimitTest extends TestCase
     public function test_webhook_rate_limit_blocks_request_121_without_reverification_or_duplicate_credit(): void
     {
         $user = User::factory()->create(['wallet_balance' => 500]);
-        $attempt = $this->createZarinpalAttempt($user, 'AUTH-WEBHOOK-RATE-LIMIT');
         $this->configureZarinpalCallback();
+        $attempt = $this->createZarinpalAttempt($user, 'AUTH-WEBHOOK-RATE-LIMIT');
         Http::fake([
             'https://sandbox.example/api/payment/verify.json' => Http::response([
                 'data' => ['code' => 100, 'ref_id' => 678901],
@@ -307,6 +311,7 @@ class PaymentRateLimitTest extends TestCase
             'merchant_reference' => (string) Str::uuid(),
             'gateway' => 'zarinpal',
             'gateway_environment' => 'sandbox',
+            'gateway_merchant_id' => config('payment.gateways.zarinpal.merchant_ids.sandbox'),
             'amount' => 12000,
             'currency' => 'TOMAN',
             'status' => 'pending',

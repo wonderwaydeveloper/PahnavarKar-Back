@@ -18,6 +18,7 @@ return new class extends Migration
             $table->unsignedInteger('usage_limit')->nullable();
             $table->unsignedInteger('usage_count')->default(0);
             $table->foreignId('user_id')->nullable()->constrained()->nullOnDelete();
+            $table->boolean('is_user_restricted')->default(false);
             $table->timestamp('starts_at')->nullable();
             $table->timestamp('expires_at')->nullable();
             $table->boolean('is_active')->default(true);
@@ -25,10 +26,17 @@ return new class extends Migration
             $table->index(['is_active', 'starts_at', 'expires_at']);
         });
 
+        Schema::create('discount_code_user', function (Blueprint $table): void {
+            $table->foreignId('discount_code_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            $table->primary(['discount_code_id', 'user_id']);
+            $table->index('user_id');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('discount_code_user');
         Schema::dropIfExists('discount_codes');
     }
 };

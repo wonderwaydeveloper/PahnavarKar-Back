@@ -10,6 +10,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia;
+use Spatie\Activitylog\Models\Activity;
 use Tests\TestCase;
 
 class AdminDiscountManagementTest extends TestCase
@@ -107,6 +108,206 @@ class AdminDiscountManagementTest extends TestCase
         $this->assertDatabaseCount('discount_codes', 0);
     }
 
+    public function test_admin_can_assign_discount_code_to_a_user_by_normalized_phone_number(): void
+    {
+        $admin = $this->discountAdmin();
+        $user = User::factory()->create(['phone' => '+989121234567']);
+
+        $this->actingAs($admin, 'web')
+            ->post('/admin/discount-codes', [
+                'code' => 'PHONE_OFFER',
+                'auto_generate_code' => false,
+                'type' => 'percentage',
+                'value' => 15,
+                'min_order_amount' => 0,
+                'user_phone' => '۰۰۹۸ ۹۱۲ ۱۲۳ ۴۵۶۷',
+                'is_active' => true,
+            ])
+            ->assertRedirect(route('admin.discount-codes.index'));
+
+        $this->assertDatabaseHas('discount_codes', [
+            'code' => 'PHONE_OFFER',
+            'user_id' => $user->getKey(),
+        ]);
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson('/api/v1/admin/discount-codes', [
+                'code' => 'LEGACY_ID',
+                'type' => 'percentage',
+                'value' => 10,
+                'min_order_amount' => 0,
+                'user_id' => $user->getKey(),
+            ])
+            ->assertCreated()
+            ->assertJsonPath('discount.user_id', $user->getKey());
+
+        $this->assertDatabaseHas('discount_codes', [
+            'code' => 'LEGACY_ID',
+            'user_id' => $user->getKey(),
+        ]);
+        $this->assertDatabaseHas('discount_code_user', [
+            'discount_code_id' => DiscountCode::query()->where('code', 'LEGACY_ID')->value('id'),
+            'user_id' => $user->getKey(),
+        ]);
+    }
+
+    public function test_admin_can_assign_one_code_to_multiple_users_by_phone_number(): void
+    {
+        $admin = $this->discountAdmin();
+        $firstUser = User::factory()->create(['phone' => '+989121234567']);
+        $secondUser = User::factory()->create(['phone' => '+989351234567']);
+
+        $this->actingAs($admin, 'web')
+            ->post('/admin/discount-codes', [
+                'code' => 'GROUP_OFFER',
+                'auto_generate_code' => false,
+                'type' => 'percentage',
+                'value' => 15,
+                'min_order_amount' => 0,
+                'user_phones' => ['۰۰۹۸ ۹۱۲ ۱۲۳ ۴۵۶۷', '09351234567'],
+                'is_active' => true,
+            ])
+            ->assertRedirect(route('admin.discount-codes.index'));
+
+        $code = DiscountCode::query()->where('code', 'GROUP_OFFER')->sole();
+        $this->assertTrue($code->is_user_restricted);
+        $this->assertNull($code->user_id);
+        $this->assertEqualsCanonicalizing(
+            [$firstUser->getKey(), $secondUser->getKey()],
+            $code->users()->pluck('users.id')->all(),
+        );
+
+        $activity = Activity::query()
+            ->where('log_name', 'discount_codes')
+            ->where('event', 'discount_code_users_changed')
+            ->sole();
+        $this->assertSame($admin->getKey(), $activity->causer_id);
+        $this->assertSame([], $activity->properties->get('before_user_ids'));
+        $this->assertSame(
+            [$firstUser->getKey(), $secondUser->getKey()],
+            $activity->properties->get('after_user_ids'),
+        );
+    }
+
+    public function test_admin_can_replace_multiple_discount_code_assignments(): void
+    {
+        $admin = $this->discountAdmin();
+        $firstUser = User::factory()->create(['phone' => '+989121234567']);
+        $secondUser = User::factory()->create(['phone' => '+989351234567']);
+        $thirdUser = User::factory()->create(['phone' => '+989191234567']);
+        $code = $this->createCode('REPLACE_GROUP', [
+            'is_user_restricted' => true,
+        ]);
+        $code->users()->sync([$firstUser->getKey(), $secondUser->getKey()]);
+
+        $this->actingAs($admin, 'web')
+            ->put('/admin/discount-codes/'.$code->getKey(), [
+                'user_phones' => ['09191234567'],
+            ])
+            ->assertRedirect(route('admin.discount-codes.index'));
+
+        $this->assertEquals([$thirdUser->getKey()], $code->fresh()->users()->pluck('users.id')->all());
+        $this->assertSame($thirdUser->getKey(), $code->fresh()->user_id);
+
+        $this->actingAs($admin, 'web')
+            ->put('/admin/discount-codes/'.$code->getKey(), [
+                'user_phones' => [],
+            ])
+            ->assertRedirect(route('admin.discount-codes.index'));
+
+        $this->assertSame([], $code->fresh()->users()->pluck('users.id')->all());
+        $this->assertFalse($code->fresh()->is_user_restricted);
+    }
+
+    public function test_replacing_same_sized_discount_user_group_is_audited_without_logging_noop_changes(): void
+    {
+        $admin = $this->discountAdmin();
+        $firstUser = User::factory()->create(['phone' => '+989121234567']);
+        $secondUser = User::factory()->create(['phone' => '+989351234567']);
+        $thirdUser = User::factory()->create(['phone' => '+989191234567']);
+        $fourthUser = User::factory()->create(['phone' => '+989991234567']);
+        $code = $this->createCode('AUDIT_GROUP', [
+            'is_user_restricted' => true,
+        ]);
+        $code->users()->sync([$firstUser->getKey(), $secondUser->getKey()]);
+
+        $this->actingAs($admin, 'web')
+            ->put('/admin/discount-codes/'.$code->getKey(), [
+                'user_phones' => ['09191234567', '09991234567'],
+            ])
+            ->assertRedirect(route('admin.discount-codes.index'));
+
+        $this->assertNull($code->fresh()->user_id);
+        $this->assertTrue($code->fresh()->is_user_restricted);
+        $activity = Activity::query()
+            ->where('log_name', 'discount_codes')
+            ->where('event', 'discount_code_users_changed')
+            ->sole();
+        $this->assertSame($code->getKey(), $activity->subject_id);
+        $this->assertSame($admin->getKey(), $activity->causer_id);
+        $this->assertSame(
+            [$firstUser->getKey(), $secondUser->getKey()],
+            $activity->properties->get('before_user_ids'),
+        );
+        $this->assertSame(
+            [$thirdUser->getKey(), $fourthUser->getKey()],
+            $activity->properties->get('after_user_ids'),
+        );
+
+        $this->actingAs($admin, 'web')
+            ->put('/admin/discount-codes/'.$code->getKey(), [
+                'user_phones' => ['09191234567', '09991234567'],
+            ])
+            ->assertRedirect(route('admin.discount-codes.index'));
+
+        $this->assertSame(
+            1,
+            Activity::query()
+                ->where('log_name', 'discount_codes')
+                ->where('event', 'discount_code_users_changed')
+                ->count(),
+        );
+    }
+
+    public function test_admin_cannot_assign_discount_code_to_an_unknown_phone_number(): void
+    {
+        $admin = $this->discountAdmin();
+
+        $this->actingAs($admin, 'web')
+            ->from('/admin/discount-codes')
+            ->post('/admin/discount-codes', [
+                'code' => 'UNKNOWN_PHONE',
+                'auto_generate_code' => false,
+                'type' => 'percentage',
+                'value' => 15,
+                'min_order_amount' => 0,
+                'user_phone' => '09120000000',
+                'is_active' => true,
+            ])
+            ->assertRedirect('/admin/discount-codes')
+            ->assertSessionHasErrors('user_phone');
+
+        $this->assertDatabaseMissing('discount_codes', ['code' => 'UNKNOWN_PHONE']);
+    }
+
+    public function test_admin_can_change_discount_code_assignment_by_phone_number(): void
+    {
+        $admin = $this->discountAdmin();
+        $user = User::factory()->create(['phone' => '+989121234567']);
+        $code = $this->createCode('CHANGE_PHONE');
+
+        $this->actingAs($admin, 'web')
+            ->put('/admin/discount-codes/'.$code->getKey(), [
+                'user_phone' => '09121234567',
+            ])
+            ->assertRedirect(route('admin.discount-codes.index'));
+
+        $this->assertDatabaseHas('discount_codes', [
+            'id' => $code->getKey(),
+            'user_id' => $user->getKey(),
+        ]);
+    }
+
     public function test_admin_can_filter_codes_and_cannot_lower_limit_below_recorded_usage(): void
     {
         $admin = $this->discountAdmin();
@@ -178,6 +379,8 @@ class AdminDiscountManagementTest extends TestCase
                 ->component('Admin/DiscountCodes/Index')
                 ->where('discounts.total', 1)
                 ->where('discounts.data.0.code', 'HISTORY')
+                ->where('discounts.data.0.users', [])
+                ->where('discounts.data.0.isUserRestricted', false)
                 ->where('filters.search', 'history')
                 ->where('filters.type', 'fixed')
                 ->where('filters.status', 'active'),

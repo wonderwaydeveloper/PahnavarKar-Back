@@ -19,6 +19,10 @@ return new class extends Migration
             $table->timestamp('ends_at');
             $table->timestamp('cancelled_at')->nullable();
             $table->timestamp('push_expiry_notified_at')->nullable()->index();
+            $table->boolean('auto_renew')->default(false)->index();
+            $table->uuid('auto_renew_order_idempotency_key')->nullable();
+            $table->timestamp('auto_renew_failed_at')->nullable();
+            $table->string('auto_renew_failure_reason', 64)->nullable();
             $table->timestamps();
             $table->index(['user_id', 'status', 'ends_at']);
             $table->index(['type', 'status', 'ends_at']);

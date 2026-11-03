@@ -23,7 +23,13 @@ class PaymentGatewayManager
     public function gatewayForCallback(string $name): PaymentGatewayInterface
     {
         $gateway = config("payment.gateways.{$name}");
-        if (! is_array($gateway) || ! ($gateway['credentials_configured'] ?? $gateway['enabled'] ?? false)) {
+        if (! is_array($gateway)) {
+            throw new PaymentGatewayUnavailableException("Payment gateway [{$name}] is not configured.");
+        }
+        if (
+            $name !== 'zarinpal'
+            && ! ($gateway['credentials_configured'] ?? $gateway['enabled'] ?? false)
+        ) {
             throw new PaymentGatewayUnavailableException("Payment gateway [{$name}] is not configured.");
         }
 

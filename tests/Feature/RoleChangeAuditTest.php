@@ -34,4 +34,31 @@ class RoleChangeAuditTest extends TestCase
         $this->seed(RolePermissionSeeder::class);
         $this->assertSame(1, Activity::query()->where('event', 'user_roles_changed')->count());
     }
+
+    public function test_role_permission_seeder_clears_and_audits_legacy_direct_permissions(): void
+    {
+        $this->seed(RolePermissionSeeder::class);
+        $user = User::factory()->create();
+        $user->assignRole('User');
+        $user->givePermissionTo('manage wallet');
+
+        $this->assertTrue($user->fresh()->canAccessAdminPanel());
+        $this->seed(RolePermissionSeeder::class);
+
+        $user->refresh();
+        $this->assertTrue($user->hasRole('User'));
+        $this->assertSame([], $user->getDirectPermissions()->pluck('name')->all());
+        $this->assertFalse($user->canAccessAdminPanel());
+
+        $activity = Activity::query()
+            ->where('event', 'user_direct_permissions_cleared')
+            ->where('subject_id', $user->getKey())
+            ->sole();
+        $this->assertNull($activity->causer_id);
+        $this->assertSame([
+            'before' => ['manage wallet'],
+            'after' => [],
+            'source' => 'seeder:role-permissions',
+        ], $activity->properties->toArray());
+    }
 }

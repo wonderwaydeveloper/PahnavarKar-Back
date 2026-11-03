@@ -56,6 +56,12 @@ class AdminUserController extends Controller
                     'isActive' => $user->is_active,
                     'isPrivileged' => $user->hasAnyRole(['Owner', 'Admin']),
                     'statusReason' => $user->account_status_reason,
+                    'suspendedUntil' => $user->suspended_until?->toIso8601String(),
+                    'suspensionRevokesSessions' => $user->suspension_revoke_sessions,
+                    'restrictedCapabilities' => $user->restricted_capabilities ?? [],
+                    'restrictionReason' => $user->restriction_reason,
+                    'restrictedUntil' => $user->restricted_until?->toIso8601String(),
+                    'restrictionRevokesSessions' => $user->restriction_revoke_sessions,
                     'roles' => $user->roles->map(fn (Role $role): array => [
                         'id' => $role->id,
                         'key' => $role->name,
@@ -96,20 +102,50 @@ class AdminUserController extends Controller
         }
 
         $data = $request->validate([
-            'is_active' => ['required', 'boolean'],
-            'reason' => ['required_if:is_active,false', 'nullable', 'string', 'min:5', 'max:500'],
+            'mode' => ['sometimes', 'required', 'in:active,restricted,suspended'],
+            'is_active' => ['sometimes', 'required', 'boolean', 'required_without:mode'],
+            'reason' => ['required_if:mode,suspended,restricted', 'required_if:is_active,false', 'nullable', 'string', 'min:5', 'max:500'],
+            'suspended_until' => ['nullable', 'date', 'after:now'],
+            'restriction_capabilities' => ['required_if:mode,restricted', 'array', 'min:1'],
+            'restriction_capabilities.*' => ['string', 'distinct', 'in:financial,profile,security'],
+            'restricted_until' => ['nullable', 'date', 'after:now'],
+            'revoke_sessions' => ['sometimes', 'boolean'],
         ]);
 
+        $mode = $data['mode'] ?? ((bool) ($data['is_active'] ?? true) ? 'active' : 'suspended');
+        $reason = isset($data['reason']) ? trim($data['reason']) : null;
+
+        if ($mode === 'restricted') {
+            $statusService->setRestricted(
+                $user,
+                $request->user(),
+                $data['restriction_capabilities'],
+                $reason,
+                $data['restricted_until'] ?? null,
+                (bool) ($data['revoke_sessions'] ?? false),
+            );
+
+            return back()->with('status', 'محدودیت‌های انتخاب‌شده برای حساب کاربر اعمال شد.');
+        }
+
+        $active = $mode === 'active';
+        $revokeSessions = (bool) ($data['revoke_sessions'] ?? true);
         $statusService->setActive(
             $user,
             $request->user(),
-            (bool) $data['is_active'],
-            isset($data['reason']) ? trim($data['reason']) : null,
+            $active,
+            $reason,
+            $data['suspended_until'] ?? null,
+            $revokeSessions,
         );
 
-        return back()->with('status', $data['is_active']
+        return back()->with('status', $active
             ? 'دسترسی حساب کاربر دوباره فعال شد.'
-            : 'حساب کاربر غیرفعال و نشست‌های فعال آن لغو شد.');
+            : ($data['suspended_until'] ?? null
+                ? 'حساب کاربر تا زمان تعیین‌شده معلق شد و پس از آن به‌صورت خودکار فعال می‌شود.'
+                : ($revokeSessions
+                    ? 'حساب کاربر تا فعال‌سازی دستی معلق شد؛ نشست‌های فعال آن لغو شدند.'
+                    : 'حساب کاربر تا فعال‌سازی دستی معلق شد؛ نشست‌های آن حفظ شدند.')));
     }
 
     public function updateAccess(Request $request, User $user): RedirectResponse

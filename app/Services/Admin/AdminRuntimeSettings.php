@@ -44,10 +44,19 @@ class AdminRuntimeSettings
 
     public function walletWithdrawals(): array
     {
-        return array_replace_recursive(
+        $settings = array_replace_recursive(
             config('wallet.withdrawals', []),
             $this->get('wallet_withdrawals', config('wallet.withdrawals', [])),
         );
+        $settings['automatic_mode_available'] = (bool) config('wallet.payouts.automatic_available', false);
+        if (
+            ! in_array($settings['processing_mode'] ?? null, ['manual', 'automatic'], true)
+            || ($settings['processing_mode'] === 'automatic' && ! $settings['automatic_mode_available'])
+        ) {
+            $settings['processing_mode'] = 'manual';
+        }
+
+        return $settings;
     }
 
     public function siteContent(): array
@@ -56,6 +65,17 @@ class AdminRuntimeSettings
             config('site', []),
             $this->get('site_content', config('site', [])),
         );
+    }
+
+    public function smsProvider(): string
+    {
+        $default = config('services.sms.provider', 'melipayamak');
+        $settings = $this->get('sms_provider', ['provider' => $default]);
+        $provider = $settings['provider'] ?? $default;
+
+        return in_array($provider, ['melipayamak', 'kavenegar'], true)
+            ? $provider
+            : $default;
     }
 
     /**

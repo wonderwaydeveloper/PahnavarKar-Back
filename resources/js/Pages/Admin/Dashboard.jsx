@@ -3,12 +3,9 @@ import AdminLogoutButton from '../../Components/AdminLogoutButton';
 import AdminMobileNavigation from '../../Components/AdminMobileNavigation';
 import AdminSidebar from '../../Components/AdminSidebar';
 import ThemeSwitcher from '../../Components/ThemeSwitcher';
+import { formatPersianDateTime } from '../../Utils/persian-date';
 
 const numberFormat = new Intl.NumberFormat('fa-IR');
-const dateFormat = new Intl.DateTimeFormat('fa-IR', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-});
 
 function formatAmount(amount) {
     return numberFormat.format(amount ?? 0);
@@ -160,7 +157,7 @@ export default function Dashboard({
                                                         <td><span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-semibold text-emerald-700">{transaction.status}</span></td>
                                                         <td className="whitespace-nowrap text-slate-500">
                                                             {transaction.createdAt
-                                                                ? dateFormat.format(new Date(transaction.createdAt))
+                                                                ? formatPersianDateTime(transaction.createdAt, { dateStyle: 'short' })
                                                                 : '—'}
                                                         </td>
                                                     </tr>

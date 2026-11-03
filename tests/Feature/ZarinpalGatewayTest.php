@@ -26,6 +26,61 @@ class ZarinpalGatewayTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_payment_attempt_merchant_snapshot_is_used_after_configuration_changes(): void
+    {
+        $merchantIdAtInitiation = (string) Str::uuid();
+        $rotatedMerchantId = (string) Str::uuid();
+        config([
+            'payment.default' => 'zarinpal',
+            'payment.environment' => 'sandbox',
+            'payment.max_top_up' => 1000000,
+            'payment.gateways.zarinpal.enabled' => true,
+            'payment.gateways.zarinpal.credentials_configured' => true,
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantIdAtInitiation,
+            'payment.gateways.zarinpal.api_urls.sandbox' => 'https://sandbox.example/api/payment',
+            'payment.gateways.zarinpal.start_urls.sandbox' => 'https://sandbox.example/pg/StartPay',
+        ]);
+        Http::fake([
+            'https://sandbox.example/api/payment/request.json' => Http::response([
+                'data' => ['code' => 100, 'authority' => 'AUTH-SNAPSHOT'],
+            ]),
+            'https://sandbox.example/api/payment/verify.json' => Http::response([
+                'data' => ['code' => 100, 'ref_id' => 123456],
+            ]),
+        ]);
+        $this->mock(ExpoPushService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('sendToUser')->once();
+        });
+
+        $user = User::factory()->create(['wallet_balance' => 100]);
+        $attempt = app(PaymentService::class)->startWalletTopUp(
+            $user,
+            12000,
+            (string) Str::uuid(),
+        );
+        $this->assertSame($merchantIdAtInitiation, $attempt->gateway_merchant_id);
+
+        config([
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => $rotatedMerchantId,
+            'payment.gateways.zarinpal.merchant_ids.production' => null,
+            'payment.gateways.zarinpal.credentials_configured' => false,
+        ]);
+
+        $processed = app(PaymentService::class)->processCallback(
+            'zarinpal',
+            Request::create('/callback?Status=OK&Authority=AUTH-SNAPSHOT', 'GET'),
+        );
+
+        $this->assertSame('succeeded', $processed->status);
+        $this->assertSame(12100, $user->fresh()->wallet_balance);
+        Http::assertSent(static fn (ClientRequest $request): bool => $request->url() === 'https://sandbox.example/api/payment/request.json'
+            && $request->data()['merchant_id'] === $merchantIdAtInitiation);
+        Http::assertSent(static fn (ClientRequest $request): bool => $request->url() === 'https://sandbox.example/api/payment/verify.json'
+            && $request->data()['merchant_id'] === $merchantIdAtInitiation
+            && $request->data()['authority'] === 'AUTH-SNAPSHOT');
+        Http::assertSentCount(2);
+    }
+
     public function test_initiation_uses_sandbox_credentials_and_builds_an_encoded_redirect_url(): void
     {
         $merchantId = (string) Str::uuid();
@@ -46,6 +101,7 @@ class ZarinpalGatewayTest extends TestCase
             callbackUrl: 'https://app.example/api/v1/payment/callback/zarinpal',
             idempotencyKey: (string) Str::uuid(),
             environment: 'sandbox',
+            merchantId: $merchantId,
         ));
 
         $this->assertSame('pending', $result->status);
@@ -240,16 +296,92 @@ class ZarinpalGatewayTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    public function test_nok_callback_that_provider_reports_as_paid_uses_server_verification(): void
+    public function test_wallet_callback_returns_to_the_expo_url_saved_on_the_attempt(): void
     {
         $merchantId = (string) Str::uuid();
         $user = User::factory()->create(['wallet_balance' => 500]);
-        $attempt = $this->createAttempt('AUTH-123', $user);
         config([
             'payment.gateways.zarinpal.credentials_configured' => true,
             'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantId,
             'payment.gateways.zarinpal.api_urls.sandbox' => 'https://sandbox.example/api/payment',
         ]);
+        $attempt = $this->createAttempt('AUTH-EXPO-RETURN', $user);
+        $returnUrl = 'exp://192.168.1.25:8081/--/payment-return';
+        $attempt->forceFill(['app_return_url' => $returnUrl])->saveOrFail();
+        Http::fake([
+            'https://sandbox.example/api/payment/verify.json' => Http::response([
+                'data' => ['code' => 100, 'ref_id' => 987654],
+            ]),
+        ]);
+        $this->mock(ExpoPushService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('sendToUser')->once();
+        });
+
+        $response = $this->get('/api/v1/payment/callback/zarinpal?Status=OK&Authority=AUTH-EXPO-RETURN');
+
+        $response->assertRedirect(
+            $returnUrl.'?paymentId='.$attempt->getKey().'&status=succeeded',
+        );
+        $this->assertSame('succeeded', $attempt->fresh()->status);
+    }
+
+    public function test_wallet_top_up_api_stores_an_allowed_expo_return_url_and_rejects_external_urls(): void
+    {
+        $merchantId = (string) Str::uuid();
+        config([
+            'payment.default' => 'zarinpal',
+            'payment.environment' => 'sandbox',
+            'payment.gateways.zarinpal.enabled' => true,
+            'payment.gateways.zarinpal.credentials_configured' => true,
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantId,
+            'payment.gateways.zarinpal.api_urls.sandbox' => 'https://sandbox.example/api/payment',
+            'payment.gateways.zarinpal.start_urls.sandbox' => 'https://sandbox.example/pg/StartPay',
+        ]);
+        Http::fake([
+            'https://sandbox.example/api/payment/request.json' => Http::response([
+                'data' => ['code' => 100, 'authority' => 'AUTH-EXPO-API'],
+            ]),
+        ]);
+        $user = User::factory()->create(['is_active' => true]);
+        $returnUrl = 'exp://192.168.1.25:8081/--/payment-return';
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson('/api/v1/auth/wallet/top-ups', [
+                'amount' => 12000,
+                'app_return_url' => $returnUrl,
+            ], ['Idempotency-Key' => (string) Str::uuid()])
+            ->assertCreated();
+
+        $this->assertDatabaseHas('payment_attempts', [
+            'user_id' => $user->getKey(),
+            'app_return_url' => $returnUrl,
+        ]);
+
+        foreach ([
+            'https://attacker.example/payment-return',
+            'exp://attacker.example/--/payment-return',
+        ] as $invalidReturnUrl) {
+            $this->postJson('/api/v1/auth/wallet/top-ups', [
+                'amount' => 12000,
+                'app_return_url' => $invalidReturnUrl,
+            ], ['Idempotency-Key' => (string) Str::uuid()])
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('app_return_url');
+        }
+
+        $this->assertDatabaseCount('payment_attempts', 1);
+    }
+
+    public function test_nok_callback_that_provider_reports_as_paid_uses_server_verification(): void
+    {
+        $merchantId = (string) Str::uuid();
+        $user = User::factory()->create(['wallet_balance' => 500]);
+        config([
+            'payment.gateways.zarinpal.credentials_configured' => true,
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantId,
+            'payment.gateways.zarinpal.api_urls.sandbox' => 'https://sandbox.example/api/payment',
+        ]);
+        $attempt = $this->createAttempt('AUTH-123', $user);
         Http::fake([
             'https://sandbox.example/api/payment/inquiry.json' => Http::response([
                 'data' => ['code' => 100, 'status' => 'PAID'],
@@ -281,12 +413,12 @@ class ZarinpalGatewayTest extends TestCase
     {
         $merchantId = (string) Str::uuid();
         $user = User::factory()->create(['wallet_balance' => 500]);
-        $attempt = $this->createAttempt('AUTH-FORGED-OK', $user);
         config([
             'payment.gateways.zarinpal.credentials_configured' => true,
             'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantId,
             'payment.gateways.zarinpal.api_urls.sandbox' => 'https://sandbox.example/api/payment',
         ]);
+        $attempt = $this->createAttempt('AUTH-FORGED-OK', $user);
         Http::fake([
             'https://sandbox.example/api/payment/verify.json' => Http::response([
                 'data' => ['code' => 102],
@@ -391,6 +523,7 @@ class ZarinpalGatewayTest extends TestCase
             'merchant_reference' => (string) Str::uuid(),
             'gateway' => 'zarinpal',
             'gateway_environment' => 'sandbox',
+            'gateway_merchant_id' => $merchantId,
             'amount' => 700,
             'currency' => 'TOMAN',
             'status' => 'pending',
@@ -438,6 +571,26 @@ class ZarinpalGatewayTest extends TestCase
         try {
             app(ZarinpalGateway::class)->verify($attempt, Request::create(
                 '/callback?Status=OK&Authority=OTHER',
+                'GET',
+            ));
+        } finally {
+            Http::assertNothingSent();
+        }
+    }
+
+    public function test_verification_refuses_attempt_without_merchant_snapshot(): void
+    {
+        config([
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => (string) Str::uuid(),
+        ]);
+        Http::fake();
+        $attempt = $this->createAttempt('AUTH-NO-MERCHANT');
+        $attempt->forceFill(['gateway_merchant_id' => null])->saveOrFail();
+
+        $this->expectException(PaymentGatewayUnavailableException::class);
+        try {
+            app(ZarinpalGateway::class)->verify($attempt->fresh(), Request::create(
+                '/callback?Status=OK&Authority=AUTH-NO-MERCHANT',
                 'GET',
             ));
         } finally {
@@ -621,6 +774,285 @@ class ZarinpalGatewayTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_user_can_reconcile_a_paid_wallet_top_up_directly_with_zarinpal(): void
+    {
+        $merchantId = (string) Str::uuid();
+        $user = User::factory()->create(['is_active' => true, 'wallet_balance' => 500]);
+        config([
+            'payment.gateways.zarinpal.credentials_configured' => true,
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantId,
+            'payment.gateways.zarinpal.api_urls.sandbox' => 'https://sandbox.example/api/payment',
+        ]);
+        $attempt = $this->createAttempt('AUTH-RECONCILE-PAID', $user);
+        Http::fake([
+            'https://sandbox.example/api/payment/inquiry.json' => Http::response([
+                'data' => ['code' => 100, 'status' => 'PAID'],
+            ]),
+            'https://sandbox.example/api/payment/verify.json' => Http::response([
+                'data' => ['code' => 101, 'ref_id' => 987654],
+            ]),
+        ]);
+        $this->mock(ExpoPushService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('sendToUser')->once();
+        });
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson('/api/v1/auth/payments/'.$attempt->getKey().'/reconcile-wallet-top-up')
+            ->assertOk()
+            ->assertJsonPath('payment.id', $attempt->getKey())
+            ->assertJsonPath('payment.status', 'succeeded')
+            ->assertJsonMissingPath('payment.redirect_url');
+
+        $this->assertSame(12500, $user->fresh()->wallet_balance);
+        $this->assertSame(1, Transaction::query()->where('user_id', $user->getKey())->count());
+        $this->assertSame('succeeded', $attempt->fresh()->status);
+        Http::assertSentCount(2);
+    }
+
+    public function test_user_can_unlock_wallet_top_up_after_provider_confirms_failure(): void
+    {
+        $merchantId = (string) Str::uuid();
+        $user = User::factory()->create(['is_active' => true]);
+        config([
+            'payment.gateways.zarinpal.credentials_configured' => true,
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantId,
+            'payment.gateways.zarinpal.api_urls.sandbox' => 'https://sandbox.example/api/payment',
+        ]);
+        $attempt = $this->createAttempt('AUTH-RECONCILE-FAILED', $user);
+        Http::fake([
+            'https://sandbox.example/api/payment/inquiry.json' => Http::response([
+                'data' => ['code' => 100, 'status' => 'FAILED'],
+            ]),
+        ]);
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson('/api/v1/auth/payments/'.$attempt->getKey().'/reconcile-wallet-top-up')
+            ->assertOk()
+            ->assertJsonPath('payment.status', 'failed');
+
+        $this->getJson('/api/v1/auth/wallet/pending-top-up')
+            ->assertOk()
+            ->assertExactJson(['payment' => null]);
+        $this->assertSame(0, $user->fresh()->wallet_balance);
+        $this->assertSame(0, Transaction::query()->count());
+    }
+
+    public function test_wallet_top_up_stays_locked_while_provider_reports_payment_in_bank(): void
+    {
+        $merchantId = (string) Str::uuid();
+        $user = User::factory()->create(['is_active' => true]);
+        config([
+            'payment.gateways.zarinpal.credentials_configured' => true,
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantId,
+            'payment.gateways.zarinpal.api_urls.sandbox' => 'https://sandbox.example/api/payment',
+        ]);
+        $attempt = $this->createAttempt('AUTH-RECONCILE-IN-BANK', $user);
+        Http::fake([
+            'https://sandbox.example/api/payment/inquiry.json' => Http::response([
+                'data' => ['code' => 100, 'status' => 'IN_BANK'],
+            ]),
+        ]);
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson('/api/v1/auth/payments/'.$attempt->getKey().'/reconcile-wallet-top-up')
+            ->assertOk()
+            ->assertJsonPath('payment.status', 'pending');
+
+        $this->assertSame('pending', $attempt->fresh()->status);
+        $this->assertSame(0, $user->fresh()->wallet_balance);
+        $this->assertSame(0, Transaction::query()->count());
+    }
+
+    public function test_user_can_reconcile_a_subscription_order_and_release_it_after_confirmed_failure(): void
+    {
+        $merchantId = (string) Str::uuid();
+        $user = User::factory()->create(['is_active' => true]);
+        config([
+            'payment.gateways.zarinpal.credentials_configured' => true,
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantId,
+            'payment.gateways.zarinpal.api_urls.sandbox' => 'https://sandbox.example/api/payment',
+        ]);
+        $order = PaymentOrder::query()->create([
+            'user_id' => $user->getKey(),
+            'order_reference' => (string) Str::uuid(),
+            'kind' => 'subscription',
+            'subscription_change_type' => 'purchase',
+            'plan_key' => 'gold_1_month',
+            'duration_days' => 30,
+            'gross_amount' => 1000,
+            'wallet_amount' => 0,
+            'gateway_amount' => 1000,
+            'currency' => 'TOMAN',
+            'status' => 'pending',
+            'idempotency_key' => (string) Str::uuid(),
+            'expires_at' => now()->addDay(),
+        ]);
+        $attempt = PaymentAttempt::query()->create([
+            'user_id' => $user->getKey(),
+            'payment_order_id' => $order->getKey(),
+            'merchant_reference' => (string) Str::uuid(),
+            'idempotency_key' => (string) Str::uuid(),
+            'gateway' => 'zarinpal',
+            'gateway_environment' => 'sandbox',
+            'gateway_merchant_id' => $merchantId,
+            'amount' => 1000,
+            'currency' => 'TOMAN',
+            'status' => 'pending',
+            'gateway_reference_id' => 'AUTH-SUBSCRIPTION-FAILED',
+            'expires_at' => now()->addDay(),
+        ]);
+        Http::fake([
+            'https://sandbox.example/api/payment/inquiry.json' => Http::response([
+                'data' => ['code' => 100, 'status' => 'FAILED'],
+            ]),
+        ]);
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson('/api/v1/auth/payment-orders/'.$order->getKey().'/reconcile')
+            ->assertOk()
+            ->assertJsonPath('payment.id', $attempt->getKey())
+            ->assertJsonPath('payment.status', 'failed');
+
+        $this->assertSame('failed', $order->fresh()->status);
+        $this->assertSame('failed', $attempt->fresh()->status);
+        $this->assertSame(0, Transaction::query()->count());
+        Http::assertSentCount(1);
+    }
+
+    public function test_subscription_reconciliation_keeps_an_unknown_order_locked_without_gateway_authority(): void
+    {
+        $user = User::factory()->create(['is_active' => true, 'wallet_balance' => 0]);
+        $otherUser = User::factory()->create(['is_active' => true]);
+        $order = PaymentOrder::query()->create([
+            'user_id' => $user->getKey(),
+            'order_reference' => (string) Str::uuid(),
+            'kind' => 'subscription',
+            'subscription_change_type' => 'purchase',
+            'plan_key' => 'gold_1_month',
+            'duration_days' => 30,
+            'gross_amount' => 1000,
+            'wallet_amount' => 0,
+            'gateway_amount' => 1000,
+            'currency' => 'TOMAN',
+            'status' => 'pending',
+            'idempotency_key' => (string) Str::uuid(),
+            'expires_at' => now()->addDay(),
+        ]);
+        $attempt = PaymentAttempt::query()->create([
+            'user_id' => $user->getKey(),
+            'payment_order_id' => $order->getKey(),
+            'merchant_reference' => (string) Str::uuid(),
+            'idempotency_key' => (string) Str::uuid(),
+            'gateway' => 'zarinpal',
+            'gateway_environment' => 'sandbox',
+            'amount' => 1000,
+            'currency' => 'TOMAN',
+            'status' => 'initiation_unknown',
+            'gateway_reference_id' => null,
+            'expires_at' => now()->addDay(),
+        ]);
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson('/api/v1/auth/payment-orders/'.$order->getKey().'/reconcile')
+            ->assertStatus(409)
+            ->assertJsonPath(
+                'message',
+                'درگاه هنوز شناسهٔ پرداخت را تأیید نکرده است؛ برای جلوگیری از پرداخت تکراری، سفارش را لغو یا دوباره پرداخت نکنید و اطلاعات آن را به پشتیبانی ارائه کنید.',
+            );
+
+        $this->actingAs($otherUser, 'sanctum')
+            ->postJson('/api/v1/auth/payment-orders/'.$order->getKey().'/reconcile')
+            ->assertNotFound();
+
+        $this->assertSame('pending', $order->fresh()->status);
+        $this->assertSame('initiation_unknown', $attempt->fresh()->status);
+        $this->assertSame(0, Transaction::query()->count());
+    }
+
+    public function test_user_cannot_cancel_unknown_initiation_without_provider_authority(): void
+    {
+        $user = User::factory()->create(['is_active' => true]);
+        $attempt = $this->createAttempt('AUTH-RECONCILE-UNKNOWN', $user);
+        $attempt->forceFill([
+            'status' => 'initiation_unknown',
+            'gateway_reference_id' => null,
+        ])->saveOrFail();
+
+        $this->actingAs($user, 'sanctum')
+            ->getJson('/api/v1/auth/wallet/pending-top-up')
+            ->assertOk()
+            ->assertJsonPath('payment.can_cancel_without_gateway', false);
+
+        $this->postJson('/api/v1/auth/payments/'.$attempt->getKey().'/cancel-unredirected-wallet-top-up')
+            ->assertStatus(409);
+
+        $this->assertSame('initiation_unknown', $attempt->fresh()->status);
+        $this->assertNull($attempt->fresh()->failure_code);
+        $this->assertDatabaseCount('payment_attempts', 1);
+    }
+
+    public function test_initiating_top_up_without_authority_cannot_be_cancelled_based_on_age(): void
+    {
+        $user = User::factory()->create(['is_active' => true]);
+        $staleAttempt = $this->createAttempt('AUTH-STALE-INITIATION', $user);
+        $staleAttempt->forceFill([
+            'status' => 'initiating',
+            'gateway_reference_id' => null,
+            'created_at' => now()->subMinutes(3),
+        ])->saveOrFail();
+        $activeAttempt = $this->createAttempt('AUTH-ACTIVE-INITIATION', $user);
+        $activeAttempt->forceFill([
+            'status' => 'initiating',
+            'gateway_reference_id' => null,
+        ])->saveOrFail();
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson('/api/v1/auth/payments/'.$activeAttempt->getKey().'/cancel-unredirected-wallet-top-up')
+            ->assertStatus(409);
+
+        $staleAttempt->forceFill(['status' => 'initiating'])->saveOrFail();
+        $staleAttempt->created_at = now()->subMinutes(3);
+        $staleAttempt->saveOrFail();
+        $this->postJson('/api/v1/auth/payments/'.$staleAttempt->getKey().'/cancel-unredirected-wallet-top-up')
+            ->assertStatus(409);
+
+        $this->assertSame('initiating', $activeAttempt->fresh()->status);
+        $this->assertSame('initiating', $staleAttempt->fresh()->status);
+    }
+
+    public function test_user_cannot_cancel_wallet_top_up_after_provider_authority_is_stored(): void
+    {
+        $user = User::factory()->create(['is_active' => true]);
+        $attempt = $this->createAttempt('AUTH-DO-NOT-CANCEL', $user);
+
+        $this->actingAs($user, 'sanctum')
+            ->getJson('/api/v1/auth/wallet/pending-top-up')
+            ->assertOk()
+            ->assertJsonPath('payment.can_cancel_without_gateway', false);
+
+        $this->postJson('/api/v1/auth/payments/'.$attempt->getKey().'/cancel-unredirected-wallet-top-up')
+            ->assertStatus(409);
+
+        $this->assertSame('pending', $attempt->fresh()->status);
+    }
+
+    public function test_user_cannot_cancel_another_users_unredirected_top_up(): void
+    {
+        $owner = User::factory()->create(['is_active' => true]);
+        $otherUser = User::factory()->create(['is_active' => true]);
+        $attempt = $this->createAttempt('AUTH-OTHER-USER', $owner);
+        $attempt->forceFill([
+            'status' => 'initiation_unknown',
+            'gateway_reference_id' => null,
+        ])->saveOrFail();
+
+        $this->actingAs($otherUser, 'sanctum')
+            ->postJson('/api/v1/auth/payments/'.$attempt->getKey().'/cancel-unredirected-wallet-top-up')
+            ->assertNotFound();
+
+        $this->assertSame('initiation_unknown', $attempt->fresh()->status);
+    }
+
     private function createAttempt(string $authority, ?User $user = null): PaymentAttempt
     {
         $user ??= User::factory()->create();
@@ -630,6 +1062,7 @@ class ZarinpalGatewayTest extends TestCase
             'merchant_reference' => (string) Str::uuid(),
             'gateway' => 'zarinpal',
             'gateway_environment' => 'sandbox',
+            'gateway_merchant_id' => config('payment.gateways.zarinpal.merchant_ids.sandbox'),
             'amount' => 12000,
             'currency' => 'TOMAN',
             'status' => 'pending',

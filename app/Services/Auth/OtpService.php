@@ -14,6 +14,8 @@ use Throwable;
 
 class OtpService
 {
+    private const LOCK_DURATIONS = [300, 3600, 86400];
+
     public function __construct(private readonly SmsProvider $smsProvider) {}
 
     public function send(string $phone, string $type): void
@@ -76,18 +78,11 @@ class OtpService
             ? config("queue.connections.{$connection}.driver")
             : null;
         $queue = config('services.sms.queue');
-        $url = config('services.melipayamak.url');
-        $bodyId = config('services.melipayamak.otp_body_id');
 
         return config('services.sms.queue_enabled') === true
-            && config('services.melipayamak.enabled') === true
-            && ! (app()->environment('local') && config('services.melipayamak.local_log_enabled'))
+            && app(SmsProviderManager::class)->canQueueActiveProvider()
             && is_string($queue)
             && $queue !== ''
-            && is_string($url)
-            && str_starts_with($url, 'https://console.melipayamak.com/api/send/shared/')
-            && is_string($bodyId)
-            && $bodyId !== ''
             && is_string($driver)
             && in_array($driver, ['database', 'redis', 'sqs', 'beanstalkd'], true);
     }
@@ -105,19 +100,29 @@ class OtpService
         };
 
         if ($lockSeconds > 0) {
-            RateLimiter::hit($this->lockKey($phone, $type), $lockSeconds);
+            RateLimiter::hit($this->lockKey($phone, $type, $lockSeconds), $lockSeconds);
         }
     }
 
     public function availableLockSeconds(string $phone, string $type): int
     {
-        return RateLimiter::availableIn($this->lockKey($phone, $type));
+        return max([
+            RateLimiter::availableIn($this->legacyLockKey($phone, $type)),
+            ...array_map(
+                fn (int $duration): int => RateLimiter::availableIn($this->lockKey($phone, $type, $duration)),
+                self::LOCK_DURATIONS,
+            ),
+        ]);
     }
 
     public function clearFailedVerifications(string $phone, string $type): void
     {
         RateLimiter::clear($this->attemptKey($phone, $type));
-        RateLimiter::clear($this->lockKey($phone, $type));
+        RateLimiter::clear($this->legacyLockKey($phone, $type));
+
+        foreach (self::LOCK_DURATIONS as $duration) {
+            RateLimiter::clear($this->lockKey($phone, $type, $duration));
+        }
     }
 
     private function attemptKey(string $phone, string $type): string
@@ -125,7 +130,12 @@ class OtpService
         return 'otp-attempts:'.hash('sha256', $phone.':'.$type);
     }
 
-    private function lockKey(string $phone, string $type): string
+    private function lockKey(string $phone, string $type, int $duration): string
+    {
+        return 'otp-lock:'.$duration.':'.hash('sha256', $phone.':'.$type);
+    }
+
+    private function legacyLockKey(string $phone, string $type): string
     {
         return 'otp-lock:'.hash('sha256', $phone.':'.$type);
     }

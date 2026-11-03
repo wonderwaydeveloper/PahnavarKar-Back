@@ -59,6 +59,8 @@ export default function () {
         credit_amount: quote.credit_amount,
         discount_amount: quote.discount_amount,
         payable_amount: quote.payable_amount,
+        wallet_amount: quote.wallet_amount,
+        gateway_amount: quote.gateway_amount,
         duration_days: quote.duration_days,
         change_type: quote.change_type,
         source_subscription_id: quote.source_subscription_id || null,

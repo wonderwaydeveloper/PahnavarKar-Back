@@ -2,10 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Services\Monitoring\SentryEventFilter;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Validation\ValidationException;
 use RuntimeException;
+use Sentry\Breadcrumb;
 use Sentry\ClientBuilder;
+use Sentry\Event;
+use Sentry\EventHint;
 use Sentry\SentrySdk;
 use Sentry\State\Hub;
 use Tests\Support\RecordingSentryTransport;
@@ -62,6 +66,39 @@ class SelectiveSentryReportingTest extends TestCase
     public function test_sentry_does_not_send_default_pii(): void
     {
         $this->assertFalse(config('sentry.send_default_pii'));
+    }
+
+    public function test_sentry_event_filter_is_serializable_and_callable(): void
+    {
+        $this->assertSame(
+            [SentryEventFilter::class, 'filter'],
+            config('sentry.before_send'),
+        );
+        $this->assertIsCallable(config('sentry.before_send'));
+    }
+
+    public function test_kavenegar_api_key_is_redacted_from_http_breadcrumb_urls(): void
+    {
+        $event = Event::createEvent()->setBreadcrumb([
+            Breadcrumb::fromArray([
+                'level' => Breadcrumb::LEVEL_INFO,
+                'type' => Breadcrumb::TYPE_HTTP,
+                'category' => 'http',
+                'data' => [
+                    'url' => 'https://api.kavenegar.com/v1/private-api-key/sms/send.json',
+                    'nested' => ['request_url' => 'https://api.kavenegar.com/v1/private-api-key/verify/lookup.json'],
+                ],
+            ]),
+        ]);
+
+        $filtered = SentryEventFilter::filter($event, EventHint::fromArray([
+            'exception' => new RuntimeException('provider request failed'),
+        ]));
+
+        $this->assertNotNull($filtered);
+        $metadata = $filtered->getBreadcrumbs()[0]->getMetadata();
+        $this->assertStringNotContainsString('private-api-key', json_encode($metadata));
+        $this->assertStringContainsString('[redacted]', $metadata['url']);
     }
 
     private function useRecordingTransport(): RecordingSentryTransport

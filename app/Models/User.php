@@ -6,6 +6,7 @@ use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -14,11 +15,12 @@ use Spatie\Activitylog\Models\Concerns\LogsActivity;
 use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Permission\Traits\HasRoles;
 
-#[Fillable(['name', 'phone', 'phone_verified_at', 'profile_photo_path', 'password'])]
+#[Fillable(['name', 'phone', 'phone_verified_at', 'profile_photo_path', 'password', 'bank_account_iban'])]
 #[Hidden([
     'password',
     'remember_token',
     'wallet_balance',
+    'bank_account_iban',
     'two_factor_secret',
     'two_factor_pending_secret',
     'two_factor_recovery_codes',
@@ -64,6 +66,11 @@ class User extends Authenticatable
         return $this->hasMany(DiscountUsage::class);
     }
 
+    public function assignedDiscountCodes(): BelongsToMany
+    {
+        return $this->belongsToMany(DiscountCode::class);
+    }
+
     public function withdrawalRequests(): HasMany
     {
         return $this->hasMany(WithdrawalRequest::class);
@@ -72,6 +79,11 @@ class User extends Authenticatable
     public function pushSubscriptions(): HasMany
     {
         return $this->hasMany(PushSubscription::class);
+    }
+
+    public function inboxNotifications(): HasMany
+    {
+        return $this->hasMany(UserNotification::class);
     }
 
     /**
@@ -85,8 +97,15 @@ class User extends Authenticatable
             'is_active' => 'boolean',
             'account_status_changed_at' => 'datetime',
             'account_status_changed_by' => 'integer',
+            'suspended_until' => 'datetime',
+            'suspension_revoke_sessions' => 'boolean',
+            'restricted_capabilities' => 'array',
+            'restriction_reason' => 'string',
+            'restricted_until' => 'datetime',
+            'restriction_revoke_sessions' => 'boolean',
             'last_active_at' => 'datetime',
             'wallet_balance' => 'integer',
+            'bank_account_iban' => 'encrypted',
             'inactivity_deletion_period_months' => 'integer',
             'inactivity_deletion_sms_notified_at' => 'datetime',
             'inactivity_deletion_scheduled_at' => 'datetime',

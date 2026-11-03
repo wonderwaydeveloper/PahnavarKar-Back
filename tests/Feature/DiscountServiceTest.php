@@ -240,6 +240,48 @@ class DiscountServiceTest extends TestCase
         $this->assertDatabaseCount('discount_usages', 0);
     }
 
+    public function test_multiple_assigned_users_can_use_a_code_and_unassigned_users_cannot(): void
+    {
+        $firstUser = User::factory()->create();
+        $secondUser = User::factory()->create();
+        $unassignedUser = User::factory()->create();
+        $code = $this->createCode([
+            'code' => 'GROUPONLY',
+            'is_user_restricted' => true,
+        ]);
+        $code->users()->sync([$firstUser->getKey(), $secondUser->getKey()]);
+        $discounts = app(DiscountService::class);
+
+        $this->assertSame('GROUPONLY', $discounts->quote($firstUser, $code->code, 1000)['code']);
+        $this->assertSame('GROUPONLY', $discounts->quote($secondUser, $code->code, 1000)['code']);
+
+        try {
+            $discounts->quote($unassignedUser, $code->code, 1000);
+            $this->fail('A user outside the assigned group must not use the code.');
+        } catch (DiscountNotValidException) {
+            $this->assertSame(0, $code->fresh()->usage_count);
+        }
+    }
+
+    public function test_deleting_assigned_users_does_not_make_a_restricted_code_public(): void
+    {
+        $assignedUser = User::factory()->create();
+        $otherUser = User::factory()->create();
+        $code = $this->createCode([
+            'code' => 'RESTRICTEDAFTERDELETE',
+            'is_user_restricted' => true,
+        ]);
+        $code->users()->sync([$assignedUser->getKey()]);
+        $assignedUser->delete();
+
+        try {
+            app(DiscountService::class)->quote($otherUser, $code->code, 1000);
+            $this->fail('A code with deleted assignees must not become public.');
+        } catch (DiscountNotValidException) {
+            $this->assertTrue($code->fresh()->is_user_restricted);
+        }
+    }
+
     public function test_reservation_increments_capacity_and_prevents_duplicate_user_reservations(): void
     {
         $user = User::factory()->create();

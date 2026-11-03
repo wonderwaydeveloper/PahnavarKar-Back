@@ -24,6 +24,12 @@ return new class extends Migration
                 ->nullable()
                 ->constrained('users')
                 ->nullOnDelete();
+            $table->timestamp('suspended_until')->nullable()->index();
+            $table->boolean('suspension_revoke_sessions')->default(true);
+            $table->json('restricted_capabilities')->nullable();
+            $table->string('restriction_reason', 500)->nullable();
+            $table->timestamp('restricted_until')->nullable()->index();
+            $table->boolean('restriction_revoke_sessions')->default(false);
             $table->timestamp('last_active_at')->nullable()->index();
             $table->unsignedTinyInteger('inactivity_deletion_period_months')->nullable()->index();
             $table->timestamp('inactivity_deletion_sms_notified_at')->nullable();
@@ -35,6 +41,7 @@ return new class extends Migration
             $table->json('two_factor_recovery_codes')->nullable();
             $table->unsignedBigInteger('two_factor_last_used_step')->nullable();
             $table->unsignedBigInteger('wallet_balance')->default(0);
+            $table->text('bank_account_iban')->nullable();
             $table->string('password');
             $table->rememberToken();
             $table->timestamps();
@@ -71,7 +78,7 @@ return new class extends Migration
             $table->string('phone', 16);
             $table->string('code_hash');
             $table->enum('type', ['login', 'register', 'password_reset']);
-            $table->timestamp('expires_at');
+            $table->timestamp('expires_at')->index();
             $table->boolean('used')->default(false);
             $table->unsignedInteger('attempts')->default(0);
             $table->timestamps();

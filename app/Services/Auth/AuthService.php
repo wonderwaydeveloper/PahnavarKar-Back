@@ -5,7 +5,9 @@ namespace App\Services\Auth;
 use App\Models\Otp;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\Admin\UserAccountStatusService;
 use App\Services\Admin\UserRoleChangeAuditor;
+use App\Services\Notifications\ExpoPushService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -17,6 +19,8 @@ class AuthService
         private readonly OtpService $otpService,
         private readonly DeviceService $deviceService,
         private readonly TwoFactorLoginService $twoFactorLogin,
+        private readonly UserAccountStatusService $accountStatusService,
+        private readonly ExpoPushService $pushNotifications,
     ) {}
 
     public function verify(
@@ -47,6 +51,7 @@ class AuthService
             $platform,
             $name,
         ): array {
+            $isNewUser = false;
             $otp = Otp::lockLatestUnusedForVerification($phone, $type);
 
             if (! $otp) {
@@ -81,6 +86,7 @@ class AuthService
                     'password' => Str::random(64),
                 ]);
                 $user->forceFill(['is_active' => true])->saveOrFail();
+                $isNewUser = true;
                 $userRole = Role::findOrCreate('User', 'web');
                 $user->assignRole($userRole);
                 app(UserRoleChangeAuditor::class)->record(
@@ -102,6 +108,7 @@ class AuthService
                     'password' => Str::random(64),
                 ]);
                 $user->forceFill(['is_active' => true])->saveOrFail();
+                $isNewUser = true;
                 $userRole = Role::findOrCreate('User', 'web');
                 $user->assignRole($userRole);
                 app(UserRoleChangeAuditor::class)->record(
@@ -120,9 +127,20 @@ class AuthService
             }
 
             if (! $user->is_active) {
+                if ($user->suspended_until !== null && $user->suspended_until->lte(now())) {
+                    $this->accountStatusService->reactivateExpiredSuspension((int) $user->getKey());
+                    $user->refresh();
+                }
+            }
+
+            if (! $user->is_active) {
                 $otp->update(['used' => true]);
 
-                return ['error' => 'account_disabled'];
+                return [
+                    'error' => 'account_disabled',
+                    'reason' => $user->account_status_reason,
+                    'suspended_until' => $user->suspended_until,
+                ];
             }
 
             if ($user->phone_verified_at === null) {
@@ -151,9 +169,10 @@ class AuthService
                 $deviceModel,
                 $pushToken,
                 $platform,
+                $isNewUser,
             );
 
-            return ['session' => $session];
+            return ['session' => $session, 'new_user' => $isNewUser];
         });
 
         if (($result['status'] ?? null) === 'profile_required') {
@@ -179,7 +198,13 @@ class AuthService
                 ? 'کد تأیید منقضی شده است. کد تازه درخواست کنید.'
                 : match ($result['error']) {
                     'already_registered' => 'این شماره قبلاً ثبت شده است. برای ورود اقدام کنید.',
-                    'account_disabled' => 'دسترسی این حساب غیرفعال شده است.',
+                    'account_disabled' => implode("\n", array_filter([
+                        'دسترسی این حساب به‌طور کامل تعلیق شده است.',
+                        ! empty($result['reason']) ? 'دلیل: '.$result['reason'] : null,
+                        ! empty($result['suspended_until'])
+                            ? 'پایان تعلیق: '.$result['suspended_until']->timezone(config('app.timezone'))->format('Y/m/d H:i')
+                            : 'تعلیق تا فعال‌سازی دستی ادامه دارد.',
+                    ])),
                     default => 'کد تأیید معتبر نیست.',
                 };
 
@@ -189,6 +214,10 @@ class AuthService
         }
 
         $this->otpService->clearFailedVerifications($phone, $type);
+
+        if ($result['new_user']) {
+            $this->pushNotifications->sendWelcomeNotification($result['session']['user']);
+        }
 
         return $result['session'];
     }

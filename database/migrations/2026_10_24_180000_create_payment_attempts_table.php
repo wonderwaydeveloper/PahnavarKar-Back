@@ -21,11 +21,13 @@ return new class extends Migration
             $table->uuid('merchant_reference')->unique();
             $table->string('gateway', 32);
             $table->string('gateway_environment', 16)->default($environment);
+            $table->string('gateway_merchant_id', 64)->nullable();
             $table->unsignedBigInteger('amount');
             $table->string('currency', 8)->default('TOMAN');
             $table->string('status', 24)->default('pending');
             $table->string('gateway_reference_id', 128)->nullable();
             $table->string('redirect_url', 2048)->nullable();
+            $table->string('app_return_url', 512)->nullable();
             $table->string('failure_code', 128)->nullable();
             $table->uuid('idempotency_key');
             $table->timestamp('expires_at');

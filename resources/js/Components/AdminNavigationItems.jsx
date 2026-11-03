@@ -9,6 +9,7 @@ const groups = [
             { href: '/admin/users', label: 'مدیریت کاربران', permission: 'users', icon: 'users' },
             { href: '/admin/roles', label: 'نقش‌ها و دسترسی‌ها', permission: 'roles', icon: 'settings' },
             { href: '/admin/discount-codes', label: 'کدهای تخفیف', permission: 'discountCodes', icon: 'discount' },
+            { href: '/admin/announcements', label: 'اطلاعیه‌های رسمی', permission: 'announcements', icon: 'announcements' },
         ],
     },
     {
@@ -28,6 +29,7 @@ const groups = [
             { href: '/admin/settings/plans', label: 'پلن‌ها و دسترسی امکانات', permission: 'plans', icon: 'plans' },
             { href: '/admin/settings/wallet', label: 'کیف پول و برداشت', permission: 'wallet', icon: 'wallet' },
             { href: '/admin/settings/gateways', label: 'درگاه‌های پرداخت', permission: 'gateways', icon: 'gateways' },
+            { href: '/admin/settings/sms', label: 'سرویس پیامک', permission: 'smsProviders', icon: 'settings' },
             { href: '/admin/settings/site-content', label: 'محتوای سایت', permission: 'siteContent', icon: 'site' },
         ],
     },
@@ -42,6 +44,7 @@ export function AdminIcon({ name, className = 'size-5' }) {
         transactions: <><rect x="3.5" y="5" width="17" height="14" rx="2" /><path d="M3.5 9h17M7 14h4m2 0h4" /></>,
         wallet: <><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H20v14H6.5A2.5 2.5 0 0 1 4 16.5zM4 8h16" /><path d="M15 13h5" /><circle cx="15" cy="13" r=".5" /></>,
         discount: <><path d="M20 13 13 20 4 11V4h7z" /><circle cx="8" cy="8" r="1" /><path d="m10 14 4-4" /></>,
+        announcements: <><path d="M4 10v4a2 2 0 0 0 2 2h2l5 4V4l-5 4H6a2 2 0 0 0-2 2Z" /><path d="M17 9a5 5 0 0 1 0 6M19 6a9 9 0 0 1 0 12" /></>,
         settings: <><circle cx="12" cy="12" r="3.5" /><path d="m19.4 15 .1.1a1.8 1.8 0 1 1-2.5 2.5l-.1-.1a1.8 1.8 0 0 0-3 .8v.2a1.8 1.8 0 1 1-3.6 0v-.2a1.8 1.8 0 0 0-3-.8l-.1.1a1.8 1.8 0 1 1-2.5-2.5l.1-.1a1.8 1.8 0 0 0-.8-3h-.2a1.8 1.8 0 1 1 0-3.6h.2a1.8 1.8 0 0 0 .8-3l-.1-.1a1.8 1.8 0 1 1 2.5-2.5l.1.1a1.8 1.8 0 0 0 3-.8v-.2a1.8 1.8 0 1 1 3.6 0v.2a1.8 1.8 0 0 0 3 .8l.1-.1a1.8 1.8 0 1 1 2.5 2.5l-.1.1a1.8 1.8 0 0 0 .8 3h.2a1.8 1.8 0 1 1 0 3.6H20a1.8 1.8 0 0 0-.6 3Z" /></>,
         profile: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20v-1.5a7 7 0 0 1 14 0V20z" /></>,
         site: <><circle cx="12" cy="12" r="9" /><path d="M3.5 12h17M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></>,

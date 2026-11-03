@@ -18,7 +18,10 @@ class WithdrawalRequestConcurrencyTest extends TestCase
     {
         $this->assertIsolatedMysqlDatabase();
 
-        $user = User::factory()->create(['wallet_balance' => 150000]);
+        $user = User::factory()->create([
+            'wallet_balance' => 150000,
+            'bank_account_iban' => 'IR490000000000000000000000',
+        ]);
         $results = $this->runConcurrentRequests(
             (int) $user->getKey(),
             100000,
@@ -47,7 +50,10 @@ class WithdrawalRequestConcurrencyTest extends TestCase
     {
         $this->assertIsolatedMysqlDatabase();
 
-        $user = User::factory()->create(['wallet_balance' => 200000]);
+        $user = User::factory()->create([
+            'wallet_balance' => 200000,
+            'bank_account_iban' => 'IR490000000000000000000000',
+        ]);
         $idempotencyKey = (string) Str::uuid();
         $results = $this->runConcurrentRequests(
             (int) $user->getKey(),
@@ -74,7 +80,10 @@ class WithdrawalRequestConcurrencyTest extends TestCase
         $this->assertIsolatedMysqlDatabase();
 
         config(['wallet.withdrawals.enabled' => true]);
-        $user = User::factory()->create(['wallet_balance' => 1000000]);
+        $user = User::factory()->create([
+            'wallet_balance' => 1000000,
+            'bank_account_iban' => 'IR490000000000000000000000',
+        ]);
         $approver = User::factory()->create(['is_active' => true]);
         $rejecter = User::factory()->create(['is_active' => true]);
 

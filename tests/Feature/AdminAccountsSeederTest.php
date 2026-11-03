@@ -104,4 +104,69 @@ class AdminAccountsSeederTest extends TestCase
         $this->assertFalse($account->fresh()->hasRole('Admin'));
         $this->assertSame($activityCount, Activity::query()->where('event', 'user_roles_changed')->count());
     }
+
+    public function test_console_command_cannot_demote_the_last_owner(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $account = User::query()->firstOrFail();
+        $account->forceFill(['phone_verified_at' => now()])->saveOrFail();
+
+        $this->artisan('admin:assign-role', [
+            'userId' => $account->getKey(),
+            'role' => 'Owner',
+        ])
+            ->expectsConfirmation(
+                "Assign Owner to verified user {$account->getKey()} ({$account->name})?",
+                'yes',
+            )
+            ->assertExitCode(0);
+
+        $auditCount = Activity::query()->where('event', 'user_roles_changed')->count();
+
+        $this->artisan('admin:assign-role', [
+            'userId' => $account->getKey(),
+            'role' => 'Admin',
+        ])
+            ->expectsConfirmation(
+                "Assign Admin to verified user {$account->getKey()} ({$account->name})?",
+                'yes',
+            )
+            ->expectsOutput('Cannot remove the last Owner role. Assign another Owner before demoting this account.')
+            ->assertExitCode(1);
+
+        $this->assertTrue($account->fresh()->hasRole('Owner'));
+        $this->assertSame($auditCount, Activity::query()->where('event', 'user_roles_changed')->count());
+    }
+
+    public function test_console_command_can_demote_an_owner_when_another_owner_remains(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $owners = User::query()->take(2)->get();
+
+        foreach ($owners as $owner) {
+            $owner->forceFill(['phone_verified_at' => now()])->saveOrFail();
+            $this->artisan('admin:assign-role', [
+                'userId' => $owner->getKey(),
+                'role' => 'Owner',
+            ])
+                ->expectsConfirmation(
+                    "Assign Owner to verified user {$owner->getKey()} ({$owner->name})?",
+                    'yes',
+                )
+                ->assertExitCode(0);
+        }
+
+        $this->artisan('admin:assign-role', [
+            'userId' => $owners[0]->getKey(),
+            'role' => 'Admin',
+        ])
+            ->expectsConfirmation(
+                "Assign Admin to verified user {$owners[0]->getKey()} ({$owners[0]->name})?",
+                'yes',
+            )
+            ->assertExitCode(0);
+
+        $this->assertTrue($owners[0]->fresh()->hasRole('Admin'));
+        $this->assertTrue($owners[1]->fresh()->hasRole('Owner'));
+    }
 }

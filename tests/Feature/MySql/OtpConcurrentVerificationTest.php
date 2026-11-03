@@ -4,14 +4,116 @@ namespace Tests\Feature\MySql;
 
 use App\Models\Otp;
 use App\Models\User;
+use App\Services\Auth\OtpService;
+use Illuminate\Cache\RateLimiter as CacheRateLimiter;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
 use Throwable;
 
 class OtpConcurrentVerificationTest extends TestCase
 {
+    public function test_concurrent_failed_attempts_increment_the_shared_mysql_counter_without_lost_updates(): void
+    {
+        if (env('OTP_MYSQL_CONCURRENCY') !== '1') {
+            $this->markTestSkipped('Set OTP_MYSQL_CONCURRENCY=1 to run against a disposable MySQL test database.');
+        }
+
+        $this->assertSame('mysql', config('database.default'));
+        $database = (string) config('database.connections.mysql.database');
+        $this->assertStringStartsWith('pahnavarkar_otp_concurrency_test_', $database);
+
+        $cacheEngine = DB::selectOne(
+            'SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+            [$database, 'cache'],
+        )?->ENGINE;
+        $this->assertSame('InnoDB', $cacheEngine);
+
+        config([
+            'cache.default' => 'database',
+            'cache.limiter' => 'database',
+        ]);
+        app()->forgetInstance(CacheRateLimiter::class);
+        RateLimiter::clearResolvedInstance();
+        $phone = '+989'.random_int(100000000, 999999999);
+        $attemptKey = 'otp-attempts:'.hash('sha256', $phone.':login');
+        $service = app(OtpService::class);
+        $service->recordFailedVerification($phone, 'login');
+        $service->recordFailedVerification($phone, 'login');
+        $this->assertSame(2, RateLimiter::attempts($attemptKey));
+
+        $barrierDirectory = sys_get_temp_dir().DIRECTORY_SEPARATOR.'otp-failure-concurrency-'.bin2hex(random_bytes(12));
+        mkdir($barrierDirectory);
+        $processes = [];
+
+        try {
+            foreach (range(1, 8) as $worker) {
+                $processes[$worker] = new Process(
+                    [PHP_BINARY, base_path('tests/Support/otp-concurrent-verification-worker.php'), (string) $worker, 'record-failure'],
+                    base_path(),
+                    [
+                        'APP_ENV' => 'testing',
+                        'CACHE_STORE' => 'database',
+                        'OTP_CONCURRENCY_DIR' => $barrierDirectory,
+                        'OTP_CONCURRENCY_PHONE' => $phone,
+                        'OTP_CONCURRENCY_DEVICE_ID' => '73e16eb1-a2d5-4a54-a4a7-59c1c3bf1174',
+                        'DB_HOST' => (string) config('database.connections.mysql.host'),
+                        'DB_PORT' => (string) config('database.connections.mysql.port'),
+                        'DB_DATABASE' => $database,
+                        'DB_USERNAME' => (string) config('database.connections.mysql.username'),
+                        'DB_PASSWORD' => (string) config('database.connections.mysql.password'),
+                    ],
+                    null,
+                    null,
+                    20,
+                );
+                $processes[$worker]->start();
+            }
+
+            $this->waitForFiles(
+                $barrierDirectory,
+                array_map(fn (int $worker): string => 'ready-'.$worker, range(1, 8)),
+                $processes,
+            );
+            touch($barrierDirectory.DIRECTORY_SEPARATOR.'release');
+
+            foreach ($processes as $worker => $process) {
+                $process->wait();
+                $this->assertSame(0, $process->getExitCode(), "Worker {$worker}: ".$process->getErrorOutput());
+                $result = json_decode(
+                    (string) file_get_contents($barrierDirectory.DIRECTORY_SEPARATOR.'result-'.$worker),
+                    true,
+                    flags: JSON_THROW_ON_ERROR,
+                );
+                $this->assertSame('recorded', $result['status']);
+            }
+
+            $this->assertSame(10, RateLimiter::attempts($attemptKey));
+            $this->assertGreaterThan(86000, $service->availableLockSeconds($phone, 'login'));
+        } finally {
+            RateLimiter::clear($attemptKey);
+            foreach ([300, 3600, 86400] as $duration) {
+                RateLimiter::clear('otp-lock:'.$duration.':'.hash('sha256', $phone.':login'));
+            }
+            RateLimiter::clear('otp-lock:'.hash('sha256', $phone.':login'));
+
+            foreach ($processes as $process) {
+                if ($process->isRunning()) {
+                    $process->stop(1);
+                }
+            }
+
+            foreach (glob($barrierDirectory.DIRECTORY_SEPARATOR.'*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            rmdir($barrierDirectory);
+        }
+    }
+
     public function test_two_concurrent_verifications_can_consume_an_otp_only_once(): void
     {
         if (env('OTP_MYSQL_CONCURRENCY') !== '1') {
@@ -54,6 +156,7 @@ class OtpConcurrentVerificationTest extends TestCase
                     base_path(),
                     [
                         'APP_ENV' => 'testing',
+                        'CACHE_STORE' => 'array',
                         'OTP_CONCURRENCY_DIR' => $barrierDirectory,
                         'OTP_CONCURRENCY_PHONE' => $phone,
                         'OTP_CONCURRENCY_DEVICE_ID' => $deviceId,

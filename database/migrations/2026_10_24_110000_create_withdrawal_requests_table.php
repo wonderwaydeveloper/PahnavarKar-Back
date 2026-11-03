@@ -13,13 +13,18 @@ return new class extends Migration
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->foreignId('hold_transaction_id')->nullable()->unique()->constrained('transactions')->nullOnDelete();
             $table->foreignId('reviewed_by')->nullable()->constrained('users')->nullOnDelete();
+            $table->foreignId('paid_by')->nullable()->constrained('users')->nullOnDelete();
             $table->uuid('request_reference')->unique();
             $table->uuid('idempotency_key');
             $table->unsignedBigInteger('amount');
             $table->string('currency', 8)->default('TOMAN');
             $table->string('status', 24)->default('pending');
+            $table->string('payout_mode', 16)->default('manual');
+            $table->string('payout_method', 16)->default('iban');
             $table->string('review_note', 500)->nullable();
             $table->string('payout_reference', 128)->nullable();
+            $table->text('bank_account_iban')->nullable();
+            $table->text('bank_account_card_number')->nullable();
             $table->timestamp('idempotency_expires_at');
             $table->timestamp('reviewed_at')->nullable();
             $table->timestamp('paid_at')->nullable();

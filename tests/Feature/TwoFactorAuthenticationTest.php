@@ -113,14 +113,13 @@ class TwoFactorAuthenticationTest extends TestCase
             ->assertRedirect(route('admin.login.two-factor'));
 
         $this->assertGuest('web');
-        $this->withSession([
-            'admin_two_factor_user_id' => $user->getKey(),
-            'admin_two_factor_expires_at' => now()->addMinutes(5)->timestamp,
-        ])->post('/admin/login/two-factor', [
+        $twoFactorSessionId = $this->app['session']->getId();
+        $this->post('/admin/login/two-factor', [
             'code' => $this->totpCode((string) $user->two_factor_secret),
         ])->assertRedirect(route('admin.dashboard'));
 
         $this->assertAuthenticatedAs($user, 'web');
+        $this->assertNotSame($twoFactorSessionId, $this->app['session']->getId());
     }
 
     public function test_admin_web_two_factor_challenge_expires_after_five_failed_attempts(): void

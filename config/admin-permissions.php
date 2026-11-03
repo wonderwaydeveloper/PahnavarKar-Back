@@ -8,5 +8,7 @@ return [
     'manage roles' => ['name_fa' => 'مدیریت نقش‌ها و دسترسی‌ها', 'name_en' => 'Manage roles and permissions'],
     'manage wallet' => ['name_fa' => 'مدیریت کیف پول', 'name_en' => 'Manage wallet'],
     'manage payment gateways' => ['name_fa' => 'مدیریت درگاه‌های پرداخت', 'name_en' => 'Manage payment gateways'],
+    'manage sms providers' => ['name_fa' => 'مدیریت سرویس پیامک', 'name_en' => 'Manage SMS providers'],
     'manage site content' => ['name_fa' => 'مدیریت محتوای سایت', 'name_en' => 'Manage site content'],
+    'manage notifications' => ['name_fa' => 'مدیریت اعلان‌ها و اطلاعیه‌ها', 'name_en' => 'Manage notifications and announcements'],
 ];

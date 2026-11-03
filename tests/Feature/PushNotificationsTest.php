@@ -7,6 +7,7 @@ use App\Jobs\SendExpoPushNotification;
 use App\Models\PushSubscription;
 use App\Models\Subscription;
 use App\Models\User;
+use App\Models\UserNotification;
 use App\Services\Notifications\ExpoPushService;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -31,7 +32,7 @@ class PushNotificationsTest extends TestCase
         ]);
         $subscription = Subscription::query()->create([
             'user_id' => $user->getKey(),
-            'plan_key' => 'bronze',
+            'plan_key' => 'gold_1_month',
             'type' => 'premium',
             'status' => 'active',
             'starts_at' => now(),
@@ -42,6 +43,51 @@ class PushNotificationsTest extends TestCase
 
         Queue::assertPushed(SendExpoPushNotification::class, fn (SendExpoPushNotification $job): bool => $job->subscriptionId === PushSubscription::query()->value('id')
             && ($job->data['event'] ?? null) === 'subscription.activated',
+        );
+        $this->assertDatabaseHas('user_notifications', [
+            'user_id' => $user->getKey(),
+            'category' => 'subscription',
+            'priority' => 'normal',
+            'event' => 'subscription.activated',
+            'title' => 'اشتراک شما فعال شد',
+            'body' => 'پرداخت تأیید شد و پلن طلایی یک‌ماهه برای حساب شما فعال شد.',
+        ]);
+    }
+
+    public function test_scheduled_subscription_activation_sends_a_reservation_notification_with_start_date(): void
+    {
+        Queue::fake();
+        $startAt = Carbon::parse('2026-11-15 09:30:00', config('app.timezone'));
+        $this->travelTo(Carbon::parse('2026-10-31 20:00:00', config('app.timezone')));
+        $user = User::factory()->create();
+        $pushSubscription = PushSubscription::query()->create([
+            'user_id' => $user->getKey(),
+            'push_token' => 'ExponentPushToken[scheduled-plan]',
+            'platform' => 'ios',
+        ]);
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->getKey(),
+            'plan_key' => 'gold_1_month',
+            'type' => 'premium',
+            'status' => 'active',
+            'starts_at' => $startAt,
+            'ends_at' => $startAt->copy()->addMonth(),
+        ]);
+
+        SubscriptionActivated::dispatch($subscription);
+
+        $notification = UserNotification::query()->sole();
+        $this->assertSame('subscription.scheduled', $notification->event);
+        $this->assertSame('پلن شما رزرو شد', $notification->title);
+        $this->assertSame(
+            'پرداخت تأیید شد و پلن طلایی یک‌ماهه پس از پایان اشتراک فعلی شما فعال خواهد شد.',
+            $notification->body,
+        );
+        $this->assertSame($startAt->toISOString(), $notification->data['scheduled_start_at']);
+        Queue::assertPushed(
+            SendExpoPushNotification::class,
+            fn (SendExpoPushNotification $job): bool => $job->subscriptionId === $pushSubscription->getKey()
+                && ($job->data['event'] ?? null) === 'subscription.scheduled',
         );
     }
 
@@ -73,6 +119,24 @@ class PushNotificationsTest extends TestCase
         );
         Queue::assertPushed(SendExpoPushNotification::class, 1);
         $this->assertNotNull($subscription->fresh()->push_expiry_notified_at);
+    }
+
+    public function test_retrying_a_deduplicated_notification_does_not_conflict_with_a_soft_deleted_row(): void
+    {
+        Queue::fake();
+        $user = User::factory()->create();
+        $data = ['event' => 'subscription.expiring', 'subscription_id' => 42];
+        $service = app(ExpoPushService::class);
+
+        $service->sendToUser($user, 'پایان اشتراک', 'اشتراک شما به‌زودی پایان می‌یابد.', $data);
+        $notification = UserNotification::query()->sole();
+        $notification->delete();
+
+        $service->sendToUser($user, 'پایان اشتراک', 'اشتراک شما به‌زودی پایان می‌یابد.', $data);
+
+        $this->assertDatabaseCount('user_notifications', 1);
+        $this->assertSame(0, $user->inboxNotifications()->count());
+        $this->assertNotNull($notification->fresh()->deleted_at);
     }
 
     public function test_expiry_reminder_selects_only_active_started_unexpired_subscriptions_within_three_days(): void
@@ -139,6 +203,7 @@ class PushNotificationsTest extends TestCase
 
         $this->assertNull($subscription->fresh()->push_expiry_notified_at);
         Queue::assertNothingPushed();
+        $this->assertDatabaseCount('user_notifications', 1);
 
         $pushSubscription = $this->pushSubscriptionFor($subscription->user);
         $this->artisan('subscriptions:notify-expiring')->assertSuccessful();
@@ -149,6 +214,7 @@ class PushNotificationsTest extends TestCase
                 && ($job->data['event'] ?? null) === 'subscription.expiring',
         );
         $this->assertNotNull($subscription->fresh()->push_expiry_notified_at);
+        $this->assertDatabaseCount('user_notifications', 1);
     }
 
     public function test_dispatch_failure_leaves_the_reminder_retryable(): void

@@ -2,10 +2,12 @@
 
 namespace Tests\Feature\Auth;
 
+use App\Jobs\SendExpoPushNotification;
 use App\Jobs\SendOtpSms;
 use App\Models\Otp;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\Auth\LocalLogSmsProvider;
 use App\Services\Auth\OtpService;
 use App\Services\Auth\SmsDeliveryException;
 use App\Services\Auth\SmsProvider;
@@ -14,8 +16,10 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
 use Mockery;
 use RuntimeException;
+use Sentry\Laravel\Facade as Sentry;
 use Spatie\Activitylog\Models\Activity;
 use Tests\TestCase;
 
@@ -43,6 +47,8 @@ class OtpAuthenticationTest extends TestCase
 
         $existingResponse->assertAccepted();
         $newResponse->assertAccepted();
+        $existingResponse->assertJsonPath('message', 'کد تأیید از طریق پیامک ارسال شد.')
+            ->assertJsonPath('resend_after', 30);
         $this->assertSame($existingResponse->json(), $newResponse->json());
     }
 
@@ -80,6 +86,40 @@ class OtpAuthenticationTest extends TestCase
         $this->assertStringNotContainsString($codes[1][1], $secondResponse->getContent());
         $this->assertTrue(Hash::check($codes[1][1], $latestOtp->code_hash));
         $this->assertNotSame($codes[1][1], $latestOtp->code_hash);
+    }
+
+    public function test_local_otp_log_requires_local_environment_and_explicit_opt_in(): void
+    {
+        $provider = app(LocalLogSmsProvider::class);
+        $code = '431827';
+        Log::spy();
+
+        try {
+            $provider->sendOtp('+989121234567', $code);
+            $this->fail('OTP logging must be disabled outside the local environment.');
+        } catch (SmsDeliveryException) {
+            Log::shouldNotHaveReceived('info');
+        }
+
+        $this->app->detectEnvironment(static fn (): string => 'local');
+        config(['services.melipayamak.local_log_enabled' => false]);
+
+        try {
+            $provider->sendOtp('+989121234567', $code);
+            $this->fail('Local OTP logging must require explicit opt-in.');
+        } catch (SmsDeliveryException) {
+            Log::shouldNotHaveReceived('info');
+        }
+
+        config(['services.melipayamak.local_log_enabled' => true]);
+        $provider->sendOtp('+989121234567', $code);
+
+        Log::shouldHaveReceived('info')
+            ->once()
+            ->with('Local OTP generated for authentication testing.', [
+                'phone_last4' => '4567',
+                'code' => $code,
+            ]);
     }
 
     public function test_invalid_otp_does_not_create_a_session_and_records_an_attempt(): void
@@ -147,6 +187,15 @@ class OtpAuthenticationTest extends TestCase
         $this->assertTrue($otp->fresh()->used);
         $this->assertDatabaseCount('personal_access_tokens', 1);
         $this->assertDatabaseCount('user_devices', 1);
+        $this->assertDatabaseCount('user_notifications', 1);
+        $this->assertDatabaseHas('user_notifications', [
+            'user_id' => $user->getKey(),
+            'category' => 'account_access',
+            'priority' => 'normal',
+            'title' => 'به پهناورکار خوش آمدید',
+            'event' => 'account.welcome',
+            'deduplication_key' => 'account.welcome:'.$user->getKey(),
+        ]);
         $this->assertIsString($response->json('token'));
 
         $roleActivity = Activity::query()
@@ -171,10 +220,12 @@ class OtpAuthenticationTest extends TestCase
 
         $this->assertDatabaseCount('personal_access_tokens', 1);
         $this->assertDatabaseCount('user_devices', 1);
+        $this->assertDatabaseCount('user_notifications', 1);
     }
 
     public function test_register_otp_role_assignment_is_audited_without_otp_or_phone_data(): void
     {
+        Queue::fake();
         $phone = '+989121234569';
         Otp::query()->create([
             'phone' => $phone,
@@ -188,10 +239,28 @@ class OtpAuthenticationTest extends TestCase
             'type' => 'register',
             'code' => '654321',
             'device_id' => '73e16eb1-a2d5-4a54-a4a7-59c1c3bf1175',
+            'push_token' => 'ExponentPushToken[new-user-device]',
+            'platform' => 'ios',
             'name' => 'Registered User',
         ])->assertOk()->assertJsonPath('status', 'authenticated');
 
         $user = User::query()->where('phone', $phone)->firstOrFail();
+        $notification = $user->inboxNotifications()->sole();
+        $this->assertSame('account.welcome', $notification->event);
+        $this->assertSame('account_access', $notification->category);
+        $this->assertSame('به پهناورکار خوش آمدید', $notification->title);
+        $this->assertSame('account.welcome:'.$user->getKey(), $notification->deduplication_key);
+        $this->assertDatabaseCount('push_subscriptions', 1);
+        Queue::assertPushed(
+            SendExpoPushNotification::class,
+            fn (SendExpoPushNotification $job): bool => $job->subscriptionId === $user->pushSubscriptions()->value('id')
+                && ($job->data['event'] ?? null) === 'account.welcome'
+                && ($job->data['notification_id'] ?? null) === $notification->getKey(),
+        );
+        Queue::assertNotPushed(
+            SendExpoPushNotification::class,
+            fn (SendExpoPushNotification $job): bool => ($job->data['event'] ?? null) === 'security.new_device',
+        );
         $activity = Activity::query()
             ->where('event', 'user_roles_changed')
             ->where('subject_id', $user->getKey())
@@ -371,19 +440,49 @@ class OtpAuthenticationTest extends TestCase
 
     public function test_synchronous_sms_delivery_failure_invalidates_the_otp(): void
     {
+        $phone = '+989121234567';
+        $providerSecret = 'provider-secret-value';
+        $otpCode = null;
         $provider = Mockery::mock(SmsProvider::class);
         $provider->shouldReceive('sendOtp')
             ->once()
-            ->andThrow(new SmsDeliveryException('provider rejected the message'));
-        $this->app->instance(SmsProvider::class, $provider);
+            ->with($phone, Mockery::type('string'))
+            ->andReturnUsing(function (string $sentPhone, string $code) use (&$otpCode, $providerSecret): void {
+                $otpCode = $code;
+                $previous = new RuntimeException("Provider connection failed; secret={$providerSecret}");
 
-        $this->postJson('/api/v1/auth/otp/send', [
-            'phone' => '+989121234567',
+                throw new SmsDeliveryException(
+                    "Delivery failed for {$sentPhone}; code={$code}; secret={$providerSecret}",
+                    0,
+                    $previous,
+                );
+            });
+        $this->app->instance(SmsProvider::class, $provider);
+        Log::spy();
+        Sentry::shouldReceive('captureException')
+            ->once()
+            ->withArgs(fn (RuntimeException $exception): bool => $exception->getMessage() === 'SMS delivery failed.');
+
+        $response = $this->postJson('/api/v1/auth/otp/send', [
+            'phone' => $phone,
             'type' => 'login',
-        ])->assertServiceUnavailable();
+        ]);
+        $response->assertServiceUnavailable()
+            ->assertJsonPath('message', 'ارسال پیامک انجام نشد. تنظیمات سرویس پیامک را بررسی و دوباره تلاش کنید.')
+            ->assertDontSee($phone)
+            ->assertDontSee($providerSecret);
 
         $this->assertDatabaseCount('otps', 1);
         $this->assertTrue(Otp::query()->firstOrFail()->used);
+        $this->assertNotNull($otpCode);
+        $response->assertDontSee($otpCode);
+
+        Log::shouldHaveReceived('warning')
+            ->once()
+            ->with('SMS delivery failed.', [
+                'exception_class' => SmsDeliveryException::class,
+                'cause_class' => RuntimeException::class,
+            ]);
     }
 
     public function test_queue_dispatch_failure_invalidates_the_otp(): void

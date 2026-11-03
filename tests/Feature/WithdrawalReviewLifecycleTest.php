@@ -12,6 +12,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Inertia\Testing\AssertableInertia as Assert;
 use Spatie\Activitylog\Models\Activity;
 use Tests\TestCase;
 
@@ -128,15 +129,86 @@ class WithdrawalReviewLifecycleTest extends TestCase
         $this->postJson("/api/v1/admin/wallet/withdrawal-requests/{$withdrawal->getKey()}/reject")
             ->assertConflict()
             ->assertJsonPath('code', 'withdrawal_request_conflict');
-        $this->postJson("/api/v1/admin/wallet/withdrawal-requests/{$withdrawal->getKey()}/approve")
-            ->assertConflict()
-            ->assertJsonPath('code', 'withdrawal_request_conflict');
 
         $this->assertSame(400000, $user->fresh()->wallet_balance);
         $this->assertSame(2, Transaction::query()->where('user_id', $user->getKey())->count());
         $this->assertSame(1, Transaction::query()
             ->where('reverses_transaction_id', $hold->getKey())
             ->count());
+    }
+
+    public function test_approved_withdrawal_can_be_marked_paid_with_a_payout_reference(): void
+    {
+        $user = User::factory()->create(['wallet_balance' => 200000]);
+        $withdrawal = $this->createWithdrawal($user);
+        $admin = $this->createWalletAdmin();
+        $service = app(WithdrawalRequestService::class);
+        $service->review((int) $withdrawal->getKey(), $admin, 'approve');
+
+        $this->actingAs($admin)
+            ->get('/admin/withdrawals')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Withdrawals/Index')
+                ->where('withdrawals.data.0.bankAccountIban', $withdrawal->bank_account_iban)
+                ->where('withdrawals.data.0.payoutMethod', 'iban'));
+
+        $this->post("/admin/withdrawals/{$withdrawal->getKey()}/paid", [
+            'payout_reference' => 'bank-transfer-123',
+        ])->assertRedirect();
+
+        $paid = $withdrawal->fresh();
+        $this->assertSame('paid', $paid->status);
+        $this->assertSame('bank-transfer-123', $paid->payout_reference);
+        $this->assertSame($admin->getKey(), $paid->paid_by);
+        $this->assertNotNull($paid->paid_at);
+        $this->assertSame(100000, $user->fresh()->wallet_balance);
+
+        $this->post("/admin/withdrawals/{$withdrawal->getKey()}/paid", [
+            'payout_reference' => 'bank-transfer-123',
+        ])->assertSessionHasErrors('payout_reference');
+    }
+
+    public function test_admin_withdrawal_page_exposes_the_encrypted_card_destination_for_manual_payout(): void
+    {
+        $user = User::factory()->create(['wallet_balance' => 200000]);
+        $withdrawal = $this->createWithdrawal($user);
+        $withdrawal->forceFill([
+            'bank_account_iban' => null,
+            'bank_account_card_number' => '4111111111111111',
+            'payout_method' => 'card',
+        ])->saveOrFail();
+        $admin = $this->createWalletAdmin();
+
+        $this->actingAs($admin)
+            ->get('/admin/withdrawals')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Withdrawals/Index')
+                ->where('withdrawals.data.0.payoutMethod', 'card')
+                ->where('withdrawals.data.0.bankAccountCardNumber', '4111111111111111'));
+    }
+
+    public function test_admin_api_can_record_a_completed_payout_once(): void
+    {
+        $user = User::factory()->create(['wallet_balance' => 200000]);
+        $withdrawal = $this->createWithdrawal($user);
+        $admin = $this->createWalletAdmin();
+        app(WithdrawalRequestService::class)->review((int) $withdrawal->getKey(), $admin, 'approve');
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/v1/admin/wallet/withdrawal-requests/{$withdrawal->getKey()}/paid", [
+                'payout_reference' => 'api-transfer-456',
+            ])
+            ->assertOk()
+            ->assertJsonPath('withdrawal_request.status', 'paid')
+            ->assertJsonPath('withdrawal_request.payout_reference', 'api-transfer-456')
+            ->assertJsonMissingPath('withdrawal_request.bank_account_iban');
+
+        $this->postJson("/api/v1/admin/wallet/withdrawal-requests/{$withdrawal->getKey()}/paid", [
+            'payout_reference' => 'api-transfer-456',
+        ])->assertConflict()
+            ->assertJsonPath('code', 'withdrawal_request_conflict');
     }
 
     public function test_rejection_failure_rolls_back_review_hold_release_balance_and_audit(): void
@@ -187,6 +259,10 @@ class WithdrawalReviewLifecycleTest extends TestCase
 
     private function createWithdrawal(User $user): WithdrawalRequest
     {
+        if (! $user->bank_account_iban) {
+            $user->forceFill(['bank_account_iban' => 'IR490000000000000000000000'])->save();
+        }
+
         return app(WithdrawalRequestService::class)->create(
             $user,
             100000,

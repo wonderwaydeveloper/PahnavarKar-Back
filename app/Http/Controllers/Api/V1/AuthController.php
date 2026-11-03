@@ -7,6 +7,7 @@ use App\Http\Requests\Auth\SendOtpRequest;
 use App\Http\Requests\Auth\VerifyOtpRequest;
 use App\Models\Otp;
 use App\Models\User;
+use App\Services\Auth\AccountDeletionGuard;
 use App\Services\Auth\AuthService;
 use App\Services\Auth\DeviceService;
 use App\Services\Auth\InactivityWarningDeliveryConfiguration;
@@ -41,7 +42,7 @@ class AuthController extends Controller
         );
 
         return response()->json([
-            'message' => 'اگر امکان استفاده از این درخواست وجود داشته باشد، کد تأیید ارسال می‌شود.',
+            'message' => 'کد تأیید از طریق پیامک ارسال شد.',
             'resend_after' => 30,
         ], Response::HTTP_ACCEPTED);
     }
@@ -250,7 +251,7 @@ class AuthController extends Controller
         return response()->json(['user' => $result['user']]);
     }
 
-    public function deleteAccount(Request $request): Response
+    public function deleteAccount(Request $request, AccountDeletionGuard $deletionGuard): Response
     {
         /** @var User $user */
         $user = $request->user();
@@ -265,7 +266,7 @@ class AuthController extends Controller
             ]);
         }
 
-        $result = DB::transaction(function () use ($data, $user, $phone): array {
+        $result = DB::transaction(function () use ($data, $user, $phone, $deletionGuard): array {
             $otp = Otp::lockLatestUnusedForVerification($phone, 'login');
 
             if (! $otp) {
@@ -282,8 +283,12 @@ class AuthController extends Controller
                 return ['error' => 'invalid'];
             }
 
-            $otp->update(['used' => true]);
             $lockedUser = User::query()->lockForUpdate()->findOrFail($user->id);
+            if ($deletionGuard->hasUnresolvedFinancialOperations((int) $lockedUser->getKey())) {
+                return ['error' => 'financial_operations'];
+            }
+
+            $otp->update(['used' => true]);
             $photoPath = $lockedUser->profile_photo_path;
             $lockedUser->tokens()->delete();
             DB::table('sessions')->where('user_id', $lockedUser->id)->delete();
@@ -291,6 +296,14 @@ class AuthController extends Controller
 
             return ['photo_path' => $photoPath];
         });
+
+        if (($result['error'] ?? null) === 'financial_operations') {
+            $this->otpService->clearFailedVerifications($phone, 'login');
+
+            throw ValidationException::withMessages([
+                'account' => $deletionGuard->blockedMessage(),
+            ]);
+        }
 
         if (isset($result['error'])) {
             if ($result['error'] === 'invalid') {

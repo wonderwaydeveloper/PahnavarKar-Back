@@ -34,6 +34,41 @@ class PaymentServiceTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config(['payment.min_top_up' => 1]);
+    }
+
+    public function test_wallet_top_up_enforces_the_configured_minimum_amount(): void
+    {
+        config([
+            'payment.min_top_up' => 10000,
+            'payment.max_top_up' => 1000000,
+            'payment.environment' => 'sandbox',
+        ]);
+        $user = User::factory()->create(['wallet_balance' => 500]);
+        $gateway = Mockery::mock(PaymentGatewayInterface::class);
+        $gateway->shouldReceive('initiate')
+            ->once()
+            ->with(Mockery::type(PaymentRequest::class))
+            ->andReturn(new GatewayPaymentResult('pending', 'provider-minimum', 'https://pay.example/minimum'));
+        $this->mockGatewayManager($gateway);
+        $payments = $this->app->make(PaymentService::class);
+
+        try {
+            $payments->startWalletTopUp($user, 9999, (string) Str::uuid());
+            $this->fail('Top-ups below the configured minimum must be rejected.');
+        } catch (PaymentConflictException) {
+            $this->assertDatabaseCount('payment_attempts', 0);
+        }
+
+        $attempt = $payments->startWalletTopUp($user, 10000, (string) Str::uuid());
+        $this->assertSame(10000, $attempt->amount);
+        $this->assertDatabaseCount('payment_attempts', 1);
+    }
+
     public function test_wallet_top_up_replay_returns_the_original_attempt_and_rejects_changed_amount(): void
     {
         config(['payment.max_top_up' => 1000000, 'payment.environment' => 'sandbox']);
@@ -59,6 +94,35 @@ class PaymentServiceTest extends TestCase
             $payments->startWalletTopUp($user, 3000, $key);
             $this->fail('An idempotency key must not be reused with a changed amount.');
         } catch (PaymentConflictException) {
+            $this->assertDatabaseCount('payment_attempts', 1);
+        }
+    }
+
+    public function test_wallet_top_up_rejects_a_second_active_attempt_for_the_same_user(): void
+    {
+        config(['payment.max_top_up' => 1000000, 'payment.environment' => 'sandbox']);
+        $user = User::factory()->create();
+        PaymentAttempt::query()->create([
+            'user_id' => $user->getKey(),
+            'merchant_reference' => (string) Str::uuid(),
+            'idempotency_key' => (string) Str::uuid(),
+            'gateway' => 'test-gateway',
+            'gateway_environment' => 'sandbox',
+            'amount' => 2500,
+            'currency' => 'TOMAN',
+            'status' => 'pending',
+            'expires_at' => now()->addDay(),
+        ]);
+        $gateway = Mockery::mock(PaymentGatewayInterface::class);
+        $gateway->shouldNotReceive('initiate');
+        $this->mockGatewayManager($gateway);
+
+        try {
+            $this->app->make(PaymentService::class)
+                ->startWalletTopUp($user, 3000, (string) Str::uuid());
+            $this->fail('A user must resolve their active wallet top-up before starting another.');
+        } catch (PaymentConflictException $exception) {
+            $this->assertStringContainsString('شارژ کیف پول در حال پرداخت یا بررسی است', $exception->getMessage());
             $this->assertDatabaseCount('payment_attempts', 1);
         }
     }
@@ -213,6 +277,12 @@ class PaymentServiceTest extends TestCase
         $this->assertSame($processed->getKey(), $replayed->getKey());
         $this->assertSame(3000, $user->fresh()->wallet_balance);
         $this->assertDatabaseCount('transactions', 1);
+        $transaction = Transaction::query()->sole();
+        $this->assertSame('test-gateway', $transaction->gateway);
+        $this->assertSame(
+            'افزایش موجودی کیف پول پس از تأیید پرداخت درگاه.',
+            $transaction->description,
+        );
         $this->assertDatabaseCount('payment_attempts', 1);
     }
 
@@ -464,7 +534,8 @@ class PaymentServiceTest extends TestCase
         $backup = Mockery::mock(PaymentGatewayInterface::class);
         $backup->shouldReceive('initiate')
             ->once()
-            ->with(Mockery::on(static fn (PaymentRequest $request): bool => $request->amount === 800))
+            ->with(Mockery::on(static fn (PaymentRequest $request): bool => $request->amount === 800
+                && $request->description === 'خرید اشتراک طلایی یک‌ماهه'))
             ->andReturn(new GatewayPaymentResult('pending', 'backup-subscription', 'https://pay.example/backup'));
 
         $manager = Mockery::mock(PaymentGatewayManager::class);
@@ -475,7 +546,15 @@ class PaymentServiceTest extends TestCase
 
         $payments = $this->app->make(PaymentService::class);
         $quote = $payments->quoteSubscriptionChange($user, 'gold_1_month');
-        $order = $payments->purchasePremium($user, 'gold_1_month', null, (string) Str::uuid(), $quote);
+        $appReturnUrl = 'exp://192.168.1.25:8081/--/payment-return';
+        $order = $payments->purchasePremium(
+            $user,
+            'gold_1_month',
+            null,
+            (string) Str::uuid(),
+            $quote,
+            appReturnUrl: $appReturnUrl,
+        );
         $attempts = $order->attempts()->orderBy('id')->get();
 
         $this->assertSame('pending', $order->status);
@@ -487,6 +566,61 @@ class PaymentServiceTest extends TestCase
         $this->assertSame('pending', $attempts[1]->status);
         $this->assertSame('backup', $attempts[1]->gateway);
         $this->assertSame('backup-subscription', $attempts[1]->gateway_reference_id);
+        $this->assertSame($appReturnUrl, $attempts[0]->app_return_url);
+        $this->assertSame($appReturnUrl, $attempts[1]->app_return_url);
+    }
+
+    public function test_subscription_purchase_can_route_the_full_amount_to_gateway_without_debiting_wallet(): void
+    {
+        config(['payment.max_top_up' => 1000000, 'payment.environment' => 'sandbox']);
+        $this->configureOfferPrice(1000);
+        $user = User::factory()->create(['wallet_balance' => 300]);
+        $gateway = Mockery::mock(PaymentGatewayInterface::class);
+        $gateway->shouldReceive('initiate')
+            ->once()
+            ->with(Mockery::on(static fn (PaymentRequest $request): bool => $request->amount === 1000))
+            ->andReturn(new GatewayPaymentResult('pending', 'gateway-only', 'https://pay.example/gateway-only'));
+        $this->mockGatewayManager($gateway);
+        $payments = $this->app->make(PaymentService::class);
+        $quote = $payments->quoteSubscriptionChange(
+            $user,
+            'gold_1_month',
+            paymentMethod: 'gateway',
+        );
+        $combinedQuote = $payments->quoteSubscriptionChange(
+            $user,
+            'gold_1_month',
+            paymentMethod: 'combined',
+        );
+        $idempotencyKey = (string) Str::uuid();
+
+        $order = $payments->purchasePremium(
+            $user,
+            'gold_1_month',
+            null,
+            $idempotencyKey,
+            $quote,
+            paymentMethod: 'gateway',
+        );
+
+        $this->assertSame('pending', $order->status);
+        $this->assertSame(0, $order->wallet_amount);
+        $this->assertSame(1000, $order->gateway_amount);
+        $this->assertSame(300, $user->fresh()->wallet_balance);
+
+        try {
+            $payments->purchasePremium(
+                $user,
+                'gold_1_month',
+                null,
+                $idempotencyKey,
+                $combinedQuote,
+                paymentMethod: 'combined',
+            );
+            $this->fail('A purchase idempotency key must not be replayed with a different payment split.');
+        } catch (PaymentConflictException) {
+            $this->assertSame(1, PaymentOrder::query()->count());
+        }
     }
 
     public function test_subscription_order_refunds_and_releases_discount_when_all_gateways_fail(): void
@@ -1158,6 +1292,37 @@ class PaymentServiceTest extends TestCase
         Event::assertDispatchedTimes(SubscriptionActivated::class, 1);
     }
 
+    public function test_subscription_attempt_snapshots_the_zarinpal_merchant_id(): void
+    {
+        $merchantId = (string) Str::uuid();
+        config([
+            'payment.max_top_up' => 1000000,
+            'payment.environment' => 'sandbox',
+            'payment.gateways.zarinpal.merchant_ids.sandbox' => $merchantId,
+        ]);
+        $this->configureOfferPrice(1000);
+        $user = User::factory()->create(['wallet_balance' => 0]);
+        $gateway = Mockery::mock(PaymentGatewayInterface::class);
+        $gateway->shouldReceive('initiate')
+            ->once()
+            ->with(Mockery::on(static fn (PaymentRequest $request): bool => $request->merchantId === $merchantId))
+            ->andReturn(new GatewayPaymentResult('pending', 'provider-subscription', 'https://pay.example/subscription'));
+        $this->mockGatewayManager($gateway, 'zarinpal');
+        $payments = $this->app->make(PaymentService::class);
+
+        $order = $payments->purchasePremium(
+            $user,
+            'gold_1_month',
+            null,
+            (string) Str::uuid(),
+            $payments->quoteSubscriptionChange($user, 'gold_1_month'),
+        );
+
+        $attempt = $order->attempts()->sole();
+        $this->assertSame('pending', $attempt->status);
+        $this->assertSame($merchantId, $attempt->gateway_merchant_id);
+    }
+
     public function test_wallet_only_subscription_purchase_activates_without_gateway_attempt(): void
     {
         config(['payment.max_top_up' => 1000000, 'payment.environment' => 'sandbox']);
@@ -1365,12 +1530,14 @@ class PaymentServiceTest extends TestCase
         Cache::forget('admin-runtime-settings:v2:plans');
     }
 
-    private function mockGatewayManager(PaymentGatewayInterface $gateway): void
-    {
+    private function mockGatewayManager(
+        PaymentGatewayInterface $gateway,
+        string $gatewayName = 'test-gateway',
+    ): void {
         $manager = Mockery::mock(PaymentGatewayManager::class);
-        $manager->shouldReceive('purchaseOrder')->andReturn(['test-gateway']);
-        $manager->shouldReceive('gateway')->with('test-gateway')->andReturn($gateway);
-        $manager->shouldReceive('gatewayForCallback')->with('test-gateway')->andReturn($gateway);
+        $manager->shouldReceive('purchaseOrder')->andReturn([$gatewayName]);
+        $manager->shouldReceive('gateway')->with($gatewayName)->andReturn($gateway);
+        $manager->shouldReceive('gatewayForCallback')->with($gatewayName)->andReturn($gateway);
 
         $this->app->instance(PaymentGatewayManager::class, $manager);
     }

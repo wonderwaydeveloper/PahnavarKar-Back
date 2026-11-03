@@ -19,11 +19,13 @@ class PaymentAttempt extends Model
         'idempotency_key',
         'gateway',
         'gateway_environment',
+        'gateway_merchant_id',
         'amount',
         'currency',
         'status',
         'gateway_reference_id',
         'redirect_url',
+        'app_return_url',
         'failure_code',
         'expires_at',
         'verified_at',
@@ -52,6 +54,12 @@ class PaymentAttempt extends Model
     public function paymentOrder(): BelongsTo
     {
         return $this->belongsTo(PaymentOrder::class);
+    }
+
+    public function canBeCancelledBeforeRedirect(): bool
+    {
+        // Missing provider data cannot prove that the initiation request never reached the gateway.
+        return false;
     }
 
     protected function casts(): array

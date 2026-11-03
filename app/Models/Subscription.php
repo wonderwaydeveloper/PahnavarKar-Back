@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
 use Spatie\Activitylog\Support\LogOptions;
 
@@ -22,6 +23,10 @@ class Subscription extends Model
         'starts_at',
         'ends_at',
         'cancelled_at',
+        'auto_renew',
+        'auto_renew_order_idempotency_key',
+        'auto_renew_failed_at',
+        'auto_renew_failure_reason',
     ];
 
     public function user(): BelongsTo
@@ -37,6 +42,15 @@ class Subscription extends Model
     public function transaction(): BelongsTo
     {
         return $this->belongsTo(Transaction::class);
+    }
+
+    public function replacementOrder(): HasOne
+    {
+        return $this->hasOne(PaymentOrder::class, 'source_subscription_id')
+            ->where('subscription_change_type', 'upgrade')
+            ->where('status', 'succeeded')
+            ->whereNotNull('subscription_id')
+            ->orderByDesc('id');
     }
 
     public function isActive(): bool
@@ -63,6 +77,8 @@ class Subscription extends Model
             'push_expiry_notified_at' => 'datetime',
             'payment_order_id' => 'integer',
             'transaction_id' => 'integer',
+            'auto_renew' => 'boolean',
+            'auto_renew_failed_at' => 'datetime',
         ];
     }
 

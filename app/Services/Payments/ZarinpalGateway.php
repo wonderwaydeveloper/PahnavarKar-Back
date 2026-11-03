@@ -18,7 +18,7 @@ class ZarinpalGateway implements PaymentGatewayInterface
 {
     public function initiate(PaymentRequest $request): GatewayPaymentResult
     {
-        $merchantId = $this->merchantId($request->environment);
+        $merchantId = $this->validateMerchantId($request->merchantId);
         $apiUrl = $this->apiUrl($request->environment, 'request.json');
         $startUrl = config("payment.gateways.zarinpal.start_urls.{$request->environment}");
         if (! is_string($startUrl) || $startUrl === '') {
@@ -102,7 +102,7 @@ class ZarinpalGateway implements PaymentGatewayInterface
         }
 
         $environment = (string) $attempt->gateway_environment;
-        $merchantId = $this->merchantId($environment);
+        $merchantId = $this->validateMerchantId($attempt->gateway_merchant_id);
 
         try {
             $response = Http::acceptJson()
@@ -152,7 +152,7 @@ class ZarinpalGateway implements PaymentGatewayInterface
      */
     public function unverifiedAuthorities(string $environment): array
     {
-        $merchantId = $this->merchantId($environment);
+        $merchantId = $this->configuredMerchantId($environment);
 
         try {
             $response = Http::acceptJson()
@@ -217,7 +217,7 @@ class ZarinpalGateway implements PaymentGatewayInterface
     public function inquiryStatus(PaymentAttempt $attempt): string
     {
         $environment = (string) $attempt->gateway_environment;
-        $merchantId = $this->merchantId($environment);
+        $merchantId = $this->validateMerchantId($attempt->gateway_merchant_id);
         $authority = $attempt->gateway_reference_id;
 
         if (! is_string($authority) || $authority === '') {
@@ -268,15 +268,23 @@ class ZarinpalGateway implements PaymentGatewayInterface
         return (string) $this->callbackValue($request, 'Authority');
     }
 
-    private function merchantId(string $environment): string
+    public function configuredMerchantId(string $environment): string
     {
         if (! in_array($environment, ['sandbox', 'production'], true)) {
             throw new PaymentGatewayUnavailableException('Zarinpal payment environment is invalid.');
         }
 
         $merchantId = config("payment.gateways.zarinpal.merchant_ids.{$environment}");
+
+        return $this->validateMerchantId($merchantId);
+    }
+
+    private function validateMerchantId(mixed $merchantId): string
+    {
         if (! is_string($merchantId) || ! Str::isUuid($merchantId)) {
-            throw new PaymentGatewayUnavailableException('Zarinpal merchant ID for this payment environment must be a valid UUID.');
+            throw new PaymentGatewayUnavailableException(
+                'Zarinpal merchant ID snapshot is missing or invalid; payment requires manual reconciliation.',
+            );
         }
 
         return $merchantId;

@@ -32,6 +32,7 @@ class AdminFinancialSettingsTest extends TestCase
             'manage plans' => 'plans',
             'manage wallet' => 'wallet',
             'manage payment gateways' => 'gateways',
+            'manage sms providers' => 'sms',
             'manage site content' => 'site-content',
         ] as $permission => $section) {
             $admin = User::factory()->create(['is_active' => true]);
@@ -48,6 +49,7 @@ class AdminFinancialSettingsTest extends TestCase
             Permission::findOrCreate('manage plans', 'web'),
             Permission::findOrCreate('manage site content', 'web'),
             Permission::findOrCreate('manage payment gateways', 'web'),
+            Permission::findOrCreate('manage sms providers', 'web'),
         ]);
         $this->actingAs($adminWithMultipleSettingsPermissions, 'web')
             ->get('/admin/settings')
@@ -60,6 +62,7 @@ class AdminFinancialSettingsTest extends TestCase
             'plans' => 'manage plans',
             'wallet' => 'manage wallet',
             'gateways' => 'manage payment gateways',
+            'sms' => 'manage sms providers',
             'site-content' => 'manage site content',
         ];
         $this->mockGatewayManager();
@@ -85,11 +88,14 @@ class AdminFinancialSettingsTest extends TestCase
                             'plans' => $section === 'plans',
                             'wallet' => $section === 'wallet',
                             'gateways' => $section === 'gateways',
+                            'smsProviders' => $section === 'sms',
                             'siteContent' => $section === 'site-content',
                         ])
                         ->where('plans', $section === 'plans' ? config('plans') : null)
                         ->where('featureGroups', $section === 'plans' ? fn ($groups) => $groups !== [] : [])
-                        ->where('wallet', $section === 'wallet' ? config('wallet.withdrawals') : null)
+                        ->where('wallet', $section === 'wallet'
+                            ? [...config('wallet.withdrawals'), 'automatic_mode_available' => false]
+                            : null)
                         ->where('gateways', $section === 'gateways' ? fn ($gateways) => $gateways['configured_gateways'] === ['zarinpal', 'sep'] : null)
                         ->where('siteContent', $section === 'site-content' ? config('site') : null),
                     );
@@ -213,6 +219,7 @@ class AdminFinancialSettingsTest extends TestCase
                 'enabled' => true,
                 'max_per_request' => 100000,
                 'max_per_day' => 500000,
+                'processing_mode' => 'manual',
             ])
             ->assertForbidden();
         $this->assertDatabaseCount('admin_settings', 0);
@@ -223,6 +230,7 @@ class AdminFinancialSettingsTest extends TestCase
             'enabled' => true,
             'max_per_request' => 75000,
             'max_per_day' => 300000,
+            'processing_mode' => 'manual',
         ];
         $this->actingAs($admin, 'web')
             ->put('/admin/settings/wallet', $payload)
@@ -234,6 +242,8 @@ class AdminFinancialSettingsTest extends TestCase
             'enabled' => true,
             'max_per_request' => 75000,
             'max_per_day' => 300000,
+            'processing_mode' => 'manual',
+            'automatic_mode_available' => false,
         ], $settings->walletWithdrawals());
 
         $createdActivity = Activity::query()->forSubject($setting)->where('event', 'created')->sole();
@@ -257,6 +267,7 @@ class AdminFinancialSettingsTest extends TestCase
             'enabled' => false,
             'max_per_request' => 50000,
             'max_per_day' => 200000,
+            'processing_mode' => 'manual',
         ];
         $this->actingAs($otherAdmin, 'web')
             ->put('/admin/settings/wallet', $updatedPayload)
@@ -265,7 +276,10 @@ class AdminFinancialSettingsTest extends TestCase
         $updatedActivity = Activity::query()->forSubject($setting)->where('event', 'updated')->sole();
         $this->assertSame($otherAdmin->getKey(), $updatedActivity->causer_id);
         $this->assertSame($otherAdmin->getKey(), $setting->fresh()->updated_by);
-        $this->assertSame($updatedPayload, $settings->walletWithdrawals());
+        $this->assertSame(
+            [...$updatedPayload, 'automatic_mode_available' => false],
+            $settings->walletWithdrawals(),
+        );
         $this->assertSame(['value', 'updated_by'], array_keys($updatedActivity->attribute_changes->get('attributes')));
         $this->assertSame(['value', 'updated_by'], array_keys($updatedActivity->attribute_changes->get('old')));
     }
@@ -278,6 +292,7 @@ class AdminFinancialSettingsTest extends TestCase
             'enabled' => true,
             'max_per_request' => 100000,
             'max_per_day' => 500000,
+            'processing_mode' => 'manual',
         ];
 
         $this->actingAs($admin, 'web')
@@ -286,6 +301,7 @@ class AdminFinancialSettingsTest extends TestCase
                 ...$base,
                 'max_per_request' => 300000,
                 'max_per_day' => 200000,
+                'processing_mode' => 'manual',
             ])
             ->assertSessionHasErrors('max_per_day');
         $this->assertDatabaseCount('admin_settings', 0);
@@ -302,6 +318,38 @@ class AdminFinancialSettingsTest extends TestCase
             json_encode(Activity::query()->forSubject($setting)->get()),
         );
         $this->assertSame(1, Activity::query()->forSubject($setting)->count());
+    }
+
+    public function test_automatic_payout_mode_is_rejected_until_a_real_provider_is_available(): void
+    {
+        $admin = User::factory()->create(['is_active' => true]);
+        $admin->givePermissionTo(Permission::findOrCreate('manage wallet', 'web'));
+
+        $this->actingAs($admin, 'web')
+            ->from('/admin/settings/wallet')
+            ->put('/admin/settings/wallet', [
+                'enabled' => true,
+                'max_per_request' => 100000,
+                'max_per_day' => 500000,
+                'processing_mode' => 'automatic',
+            ])
+            ->assertSessionHasErrors('processing_mode');
+
+        $this->assertDatabaseCount('admin_settings', 0);
+        $this->assertSame(0, Activity::query()->where('subject_type', AdminSetting::class)->count());
+    }
+
+    public function test_unavailable_saved_automatic_mode_resolves_to_manual(): void
+    {
+        $admin = User::factory()->create(['is_active' => true]);
+        $settings = app(AdminRuntimeSettings::class);
+        $settings->save('wallet_withdrawals', [
+            ...config('wallet.withdrawals'),
+            'processing_mode' => 'automatic',
+        ], $admin);
+
+        $this->assertSame('manual', $settings->walletWithdrawals()['processing_mode']);
+        $this->assertFalse($settings->walletWithdrawals()['automatic_mode_available']);
     }
 
     public function test_site_content_settings_require_permission_and_audit_only_validated_fields(): void

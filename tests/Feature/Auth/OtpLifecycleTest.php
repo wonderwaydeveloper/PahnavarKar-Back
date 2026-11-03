@@ -77,6 +77,50 @@ class OtpLifecycleTest extends TestCase
         $this->assertDatabaseCount('user_devices', 1);
     }
 
+    public function test_expired_suspension_is_cleared_during_login_even_if_scheduler_has_not_run(): void
+    {
+        $phone = '+989121234575';
+        $user = $this->userFor($phone);
+        $user->forceFill([
+            'is_active' => false,
+            'account_status_reason' => 'Temporary suspension',
+            'suspended_until' => now()->subSecond(),
+        ])->saveOrFail();
+        $this->createOtp($user);
+
+        $this->postJson('/api/v1/auth/otp/verify', $this->verifyPayload($phone))
+            ->assertOk()
+            ->assertJsonPath('status', 'authenticated');
+
+        $this->assertTrue($user->fresh()->is_active);
+        $this->assertNull($user->fresh()->suspended_until);
+    }
+
+    public function test_login_reports_suspension_reason_and_expiry_after_sessions_are_revoked(): void
+    {
+        $phone = '+989121234576';
+        $user = $this->userFor($phone);
+        $suspendedUntil = now()->addDays(3)->startOfMinute();
+        $user->forceFill([
+            'is_active' => false,
+            'account_status_reason' => 'نقض قوانین استفاده',
+            'suspended_until' => $suspendedUntil,
+        ])->saveOrFail();
+        $this->createOtp($user);
+
+        $response = $this->postJson('/api/v1/auth/otp/verify', $this->verifyPayload($phone))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('code');
+
+        $message = $response->json('errors.code.0');
+        $this->assertStringContainsString('دلیل: نقض قوانین استفاده', $message);
+        $this->assertStringContainsString(
+            'پایان تعلیق: '.$suspendedUntil->timezone(config('app.timezone'))->format('Y/m/d H:i'),
+            $message,
+        );
+        $this->assertDatabaseCount('personal_access_tokens', 0);
+    }
+
     public function test_resending_for_another_otp_type_does_not_invalidate_the_existing_type(): void
     {
         $provider = Mockery::mock(SmsProvider::class);

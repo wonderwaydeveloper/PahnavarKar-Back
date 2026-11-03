@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\PaymentOrder;
 use App\Models\User;
 use App\Services\Auth\SmsProvider;
 use Illuminate\Console\Scheduling\Schedule;
@@ -10,6 +11,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Mockery;
 use Tests\TestCase;
 
@@ -197,6 +199,37 @@ class ProcessInactiveAccountsTest extends TestCase
         $this->assertDatabaseMissing('personal_access_tokens', ['tokenable_id' => $user->id]);
         $this->assertDatabaseMissing('sessions', ['id' => 'inactive-user-session']);
         Storage::disk('public')->assertMissing('profile-photos/inactive-user.jpg');
+    }
+
+    public function test_inactivity_deletion_is_deferred_until_pending_financial_operations_are_finalized(): void
+    {
+        $now = Carbon::parse('2026-10-27 12:00:00');
+        $this->travelTo($now);
+        $user = $this->eligibleUser([
+            'inactivity_deletion_sms_notified_at' => $now->copy()->subDays(30),
+            'inactivity_deletion_scheduled_at' => $now,
+        ]);
+        $order = PaymentOrder::query()->create([
+            'user_id' => $user->getKey(),
+            'order_reference' => (string) Str::uuid(),
+            'kind' => 'wallet_top_up',
+            'gross_amount' => 1000,
+            'idempotency_key' => (string) Str::uuid(),
+            'expires_at' => now()->addDay(),
+        ]);
+        $provider = Mockery::mock(SmsProvider::class);
+        $provider->shouldNotReceive('sendInactivityDeletionWarning');
+        $this->app->instance(SmsProvider::class, $provider);
+
+        $this->runCommand();
+
+        $this->assertDatabaseHas('users', ['id' => $user->getKey()]);
+        $this->assertDatabaseHas('payment_orders', ['id' => $order->getKey(), 'status' => 'pending']);
+
+        $order->forceFill(['status' => 'failed'])->saveOrFail();
+        $this->runCommand();
+
+        $this->assertDatabaseMissing('users', ['id' => $user->getKey()]);
     }
 
     public function test_inactivity_command_runs_daily_with_overlap_protection(): void

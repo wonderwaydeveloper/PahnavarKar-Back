@@ -51,8 +51,24 @@ class AssignAdminRole extends Command
             return self::SUCCESS;
         }
 
-        DB::transaction(function () use ($user, $role): void {
+        $assigned = DB::transaction(function () use ($user, $role, $roleName): bool {
+            $ownerIds = User::query()
+                ->whereHas('roles', fn ($query) => $query
+                    ->where('name', 'Owner')
+                    ->where('guard_name', 'web'))
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->pluck('id');
             $lockedUser = User::query()->lockForUpdate()->findOrFail($user->getKey());
+
+            if (
+                $roleName !== 'Owner'
+                && $ownerIds->count() <= 1
+                && $lockedUser->hasRole('Owner')
+            ) {
+                return false;
+            }
+
             $before = $lockedUser->roles()->orderBy('name')->pluck('name')->all();
             $lockedUser->syncRoles([$role]);
             $after = $lockedUser->roles()->orderBy('name')->pluck('name')->all();
@@ -64,7 +80,16 @@ class AssignAdminRole extends Command
                 null,
                 'console:admin:assign-role',
             );
+
+            return true;
         });
+
+        if (! $assigned) {
+            $this->error('Cannot remove the last Owner role. Assign another Owner before demoting this account.');
+
+            return self::FAILURE;
+        }
+
         $this->info("Assigned {$roleName} to verified user {$userId}.");
 
         return self::SUCCESS;

@@ -328,7 +328,7 @@ class AdminRoleManagementTest extends TestCase
             ->post('/admin/permissions', ['key' => 'view reports', ...$base])
             ->assertSessionHasErrors('key');
 
-        $this->assertSame(9, Permission::query()->where('guard_name', 'web')->count());
+        $this->assertSame(count(config('admin-permissions')) + 1, Permission::query()->where('guard_name', 'web')->count());
     }
 
     public function test_custom_permission_deletion_removes_role_grants_and_logs_actor(): void

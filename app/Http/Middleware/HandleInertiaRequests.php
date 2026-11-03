@@ -45,12 +45,15 @@ class HandleInertiaRequests extends Middleware
                     'discountCodes' => $request->user('web')->can('manage discount codes'),
                     'plans' => $request->user('web')->can('manage plans'),
                     'gateways' => $request->user('web')->can('manage payment gateways'),
+                    'smsProviders' => $request->user('web')->can('manage sms providers'),
                     'siteContent' => $request->user('web')->can('manage site content'),
+                    'announcements' => $request->user('web')->can('manage notifications'),
                     'roles' => $request->user('web')->hasRole('Owner')
                         && $request->user('web')->can('manage roles'),
                     'settings' => $request->user('web')->can('manage plans')
                         || $request->user('web')->can('manage wallet')
                         || $request->user('web')->can('manage payment gateways')
+                        || $request->user('web')->can('manage sms providers')
                         || $request->user('web')->can('manage site content'),
                 ]
                 : null,

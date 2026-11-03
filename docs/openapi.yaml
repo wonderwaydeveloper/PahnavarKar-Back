@@ -23,6 +23,15 @@ paths:
     post:
       tags: [Authentication]
       summary: Request an SMS one-time code
+      description: Limits apply independently by normalized phone and client IP; an optional valid UUID X-Device-Id adds a supplemental device bucket. Invalid device headers are ignored.
+      parameters:
+        - in: header
+          name: X-Device-Id
+          required: false
+          description: Optional client-provided UUID used only for supplemental rate limiting; it is not trusted identity or app attestation. Invalid values are ignored for this bucket.
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -46,11 +55,20 @@ paths:
         "422":
           $ref: "#/components/responses/Problem"
         "429":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/RateLimitedProblem"
   /auth/otp/verify:
     post:
       tags: [Authentication]
       summary: Verify an SMS code and create a device session
+      description: Limits apply independently by normalized phone and client IP; an optional valid UUID X-Device-Id adds a supplemental device bucket. This API limiter is also shared with authenticated phone changes. Invalid device headers are ignored.
+      parameters:
+        - in: header
+          name: X-Device-Id
+          required: false
+          description: Optional client-provided UUID used only for supplemental rate limiting; it is not trusted identity or app attestation. Invalid values are ignored for this bucket.
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -87,7 +105,7 @@ paths:
         "422":
           $ref: "#/components/responses/Problem"
         "429":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/RateLimitedProblem"
   /auth/notifications/push-token:
     get:
       tags: [Push notifications]
@@ -152,6 +170,29 @@ components:
   responses:
     Problem:
       description: RFC 7807 problem response, retaining message/errors for existing clients
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    RateLimitedProblem:
+      description: Rate limit exceeded. Retry-After is the number of seconds until retry; X-RateLimit-Reset is a Unix timestamp.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until another attempt may be accepted.
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+          description: Maximum attempts for the limit that rejected this request.
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+          description: Remaining attempts for the limit that rejected this request; zero on 429.
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: Unix timestamp when the rejected limit window resets.
       content:
         application/problem+json:
           schema:

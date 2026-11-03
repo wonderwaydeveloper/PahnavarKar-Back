@@ -1,8 +1,12 @@
 <?php
 
+use App\Console\Commands\ExpireStaleSubscriptionOrders;
 use App\Console\Commands\NotifyExpiringSubscriptions;
+use App\Console\Commands\ProcessAutomaticSubscriptionRenewals;
 use App\Console\Commands\ProcessInactiveAccounts;
 use App\Console\Commands\PruneExpiredDeviceSessions;
+use App\Console\Commands\PruneExpiredOtps;
+use App\Console\Commands\ReactivateExpiredSuspensions;
 use App\Console\Commands\ReconcileZarinpalPayments;
 use App\Http\Middleware\EnsureActiveUser;
 use App\Http\Middleware\HandleInertiaRequests;
@@ -14,6 +18,7 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Router;
+use Illuminate\Support\Facades\Log;
 use Inertia\ExceptionResponse;
 use Sentry\Laravel\Integration as SentryIntegration;
 use Spatie\Permission\Middleware\PermissionMiddleware;
@@ -33,11 +38,31 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withCommands()
     ->withSchedule(function (Schedule $schedule): void {
         $schedule->command(PruneExpiredDeviceSessions::class)->hourly()->withoutOverlapping();
+        $schedule->command(PruneExpiredOtps::class)->dailyAt('03:20')->withoutOverlapping(60);
         $schedule->command(ProcessInactiveAccounts::class)->dailyAt('02:00')->withoutOverlapping();
+        $schedule->command(ReactivateExpiredSuspensions::class)->everyMinute()->withoutOverlapping();
         $schedule->command(ReconcileZarinpalPayments::class)->everyTenMinutes()->withoutOverlapping();
+        $schedule->command(ExpireStaleSubscriptionOrders::class)->everyTenMinutes()->withoutOverlapping();
         $schedule->command(NotifyExpiringSubscriptions::class)->dailyAt('09:00')->withoutOverlapping();
+        $schedule->command(ProcessAutomaticSubscriptionRenewals::class)->everyMinute()->withoutOverlapping();
         $schedule->command('activitylog:clean', ['--force' => true])->dailyAt('03:00')->withoutOverlapping();
         $schedule->command('queue:prune-failed', ['--hours' => 720])->dailyAt('03:10')->withoutOverlapping();
+        $schedule->command('backup:run-secure')
+            ->dailyAt('02:00')
+            ->withoutOverlapping(180)
+            ->environments(['production'])
+            ->onFailure(static fn () => Log::critical('Scheduled encrypted backup failed.'))
+            ->onSuccess(static fn () => Log::info('Scheduled encrypted backup completed.'));
+        $schedule->command('backup:clean')
+            ->dailyAt('02:30')
+            ->withoutOverlapping(60)
+            ->environments(['production'])
+            ->onFailure(static fn () => Log::critical('Scheduled backup cleanup failed.'));
+        $schedule->command('backup:monitor')
+            ->dailyAt('03:00')
+            ->withoutOverlapping(60)
+            ->environments(['production'])
+            ->onFailure(static fn () => Log::critical('Scheduled backup health check failed.'));
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->append(SecurityHeaders::class);

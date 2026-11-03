@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Admin\AdminAnnouncementController;
 use App\Http\Controllers\Admin\AdminDashboardController;
 use App\Http\Controllers\Admin\AdminDiscountCodePageController;
 use App\Http\Controllers\Admin\AdminProfileController;
@@ -44,7 +45,7 @@ Route::get('/', function (AdminRuntimeSettings $runtimeSettings) {
 Route::prefix('admin')->name('admin.')->group(function (): void {
     Route::get('/login', [AdminWebAuthController::class, 'showLogin'])->name('login');
     Route::post('/login/otp', [AdminWebAuthController::class, 'sendOtp'])
-        ->middleware('throttle:admin-login-send')
+        ->middleware('throttle:otp-send')
         ->name('login.send-otp');
     Route::get('/login/verify', [AdminWebAuthController::class, 'showVerify'])->name('login.verify');
     Route::post('/login/verify', [AdminWebAuthController::class, 'verify'])
@@ -55,7 +56,7 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
         ->middleware('throttle:10,1')
         ->name('login.two-factor.submit');
     Route::post('/login/resend', [AdminWebAuthController::class, 'resendOtp'])
-        ->middleware('throttle:admin-login-send')
+        ->middleware('throttle:otp-send')
         ->name('login.resend');
 
     Route::middleware(['auth:web', 'active-user'])->group(function (): void {
@@ -90,6 +91,10 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
             ->middleware('permission:manage wallet')
             ->whereNumber('withdrawal')
             ->name('withdrawals.review');
+        Route::post('/withdrawals/{withdrawal}/paid', [AdminWithdrawalPageController::class, 'markPaid'])
+            ->middleware('permission:manage wallet')
+            ->whereNumber('withdrawal')
+            ->name('withdrawals.paid');
         Route::get('/discount-codes', [AdminDiscountCodePageController::class, 'index'])
             ->middleware('permission:manage discount codes')
             ->name('discount-codes.index');
@@ -100,10 +105,20 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
             ->middleware('permission:manage discount codes')
             ->whereNumber('discountCode')
             ->name('discount-codes.update');
+        Route::get('/announcements', [AdminAnnouncementController::class, 'index'])
+            ->middleware('permission:manage notifications')
+            ->name('announcements.index');
+        Route::post('/announcements', [AdminAnnouncementController::class, 'store'])
+            ->middleware('permission:manage notifications')
+            ->name('announcements.store');
+        Route::post('/announcements/{announcement}/retry', [AdminAnnouncementController::class, 'retry'])
+            ->middleware('permission:manage notifications')
+            ->whereNumber('announcement')
+            ->name('announcements.retry');
         Route::get('/settings', [AdminSettingsController::class, 'index'])
             ->name('settings.index');
         Route::get('/settings/{section}', [AdminSettingsController::class, 'show'])
-            ->whereIn('section', ['plans', 'wallet', 'gateways', 'site-content'])
+            ->whereIn('section', ['plans', 'wallet', 'gateways', 'sms', 'site-content'])
             ->name('settings.section');
         Route::put('/settings/plans', [AdminSettingsController::class, 'updatePlans'])
             ->middleware('permission:manage plans')
@@ -114,6 +129,12 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
         Route::put('/settings/payment-gateways', [AdminSettingsController::class, 'updateGateways'])
             ->middleware('permission:manage payment gateways')
             ->name('settings.gateways.update');
+        Route::put('/settings/sms-provider', [AdminSettingsController::class, 'updateSmsProvider'])
+            ->middleware('permission:manage sms providers')
+            ->name('settings.sms-provider.update');
+        Route::post('/settings/sms-test', [AdminSettingsController::class, 'sendSmsTest'])
+            ->middleware(['permission:manage sms providers', 'throttle:admin-sms-test'])
+            ->name('settings.sms-test');
         Route::put('/settings/site-content', [AdminSettingsController::class, 'updateSiteContent'])
             ->middleware('permission:manage site content')
             ->name('settings.site-content.update');

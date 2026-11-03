@@ -34,24 +34,49 @@ class RolePermissionSeeder extends Seeder
         $userRole->syncPermissions([]);
 
         User::query()
-            ->doesntHave('roles')
+            ->where(fn ($query) => $query
+                ->doesntHave('roles')
+                ->orWhereHas('permissions'))
             ->orderBy('id')
             ->chunkById(100, function ($users) use ($userRole): void {
                 foreach ($users as $user) {
                     DB::transaction(function () use ($user, $userRole): void {
                         $lockedUser = User::query()->lockForUpdate()->findOrFail($user->getKey());
-                        if ($lockedUser->roles()->exists()) {
-                            return;
+                        $beforeRoles = $lockedUser->roles()->orderBy('name')->pluck('name')->all();
+                        $beforePermissions = $lockedUser->getDirectPermissions()
+                            ->pluck('name')
+                            ->sort()
+                            ->values()
+                            ->all();
+
+                        if ($beforeRoles === []) {
+                            $lockedUser->assignRole($userRole);
                         }
 
-                        $lockedUser->assignRole($userRole);
+                        if ($beforePermissions !== []) {
+                            $lockedUser->syncPermissions([]);
+                        }
+
+                        $afterRoles = $lockedUser->roles()->orderBy('name')->pluck('name')->all();
                         app(UserRoleChangeAuditor::class)->record(
                             $lockedUser,
-                            [],
-                            [$userRole->name],
+                            $beforeRoles,
+                            $afterRoles,
                             null,
                             'seeder:role-permissions',
                         );
+
+                        if ($beforePermissions !== []) {
+                            activity('security')
+                                ->performedOn($lockedUser)
+                                ->event('user_direct_permissions_cleared')
+                                ->withProperties([
+                                    'before' => $beforePermissions,
+                                    'after' => [],
+                                    'source' => 'seeder:role-permissions',
+                                ])
+                                ->log('User direct permissions cleared');
+                        }
                     });
                 }
             });

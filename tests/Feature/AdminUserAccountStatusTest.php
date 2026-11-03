@@ -8,6 +8,7 @@ use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Spatie\Activitylog\Models\Activity;
 use Tests\TestCase;
 
@@ -35,6 +36,11 @@ class AdminUserAccountStatusTest extends TestCase
             'user_id' => $user->getKey(),
             'payload' => '',
             'last_activity' => now()->timestamp,
+        ]);
+        Http::fake([
+            'https://exp.host/--/api/v2/push/send' => Http::response([
+                'data' => [['status' => 'ok']],
+            ]),
         ]);
 
         $this->actingAs($manager, 'web')
@@ -106,6 +112,60 @@ class AdminUserAccountStatusTest extends TestCase
             'causer_id' => $manager->getKey(),
             'event' => 'account_reactivated',
         ]);
+    }
+
+    public function test_manager_can_set_and_update_a_temporary_suspension(): void
+    {
+        $manager = $this->manager();
+        $user = User::factory()->create();
+        $suspendedUntil = now()->addDays(7)->startOfMinute();
+
+        $this->actingAs($manager, 'web')
+            ->from('/admin/users')
+            ->patch(route('admin.users.status', $user), [
+                'is_active' => false,
+                'reason' => 'Repeated policy violations',
+                'suspended_until' => $suspendedUntil->toDateTimeString(),
+            ])
+            ->assertRedirect('/admin/users');
+
+        $user->refresh();
+        $this->assertFalse($user->is_active);
+        $this->assertTrue($user->suspended_until->equalTo($suspendedUntil));
+
+        $updatedUntil = now()->addDays(30)->startOfMinute();
+        $this->actingAs($manager, 'web')
+            ->from('/admin/users')
+            ->patch(route('admin.users.status', $user), [
+                'is_active' => false,
+                'reason' => 'Repeated policy violations - extended',
+                'suspended_until' => $updatedUntil->toDateTimeString(),
+            ])
+            ->assertRedirect('/admin/users');
+
+        $user->refresh();
+        $this->assertSame('Repeated policy violations - extended', $user->account_status_reason);
+        $this->assertTrue($user->suspended_until->equalTo($updatedUntil));
+        $this->assertDatabaseHas('activity_log', [
+            'subject_id' => $user->getKey(),
+            'event' => 'account_suspension_updated',
+        ]);
+    }
+
+    public function test_temporary_suspension_end_must_be_in_the_future(): void
+    {
+        $manager = $this->manager();
+        $user = User::factory()->create();
+
+        $this->actingAs($manager, 'web')
+            ->patch(route('admin.users.status', $user), [
+                'is_active' => false,
+                'reason' => 'Policy violation',
+                'suspended_until' => now()->subMinute()->toDateTimeString(),
+            ])
+            ->assertSessionHasErrors('suspended_until');
+
+        $this->assertTrue($user->fresh()->is_active);
     }
 
     public function test_user_without_manage_users_permission_cannot_change_account_status(): void
@@ -199,6 +259,7 @@ class AdminUserAccountStatusTest extends TestCase
     public function test_inactive_web_user_is_logged_out_and_redirected_to_admin_login(): void
     {
         $user = User::factory()->inactive()->create();
+        $this->assertTrue($user->fresh()->suspension_revoke_sessions);
 
         $this->actingAs($user, 'web')
             ->get('/admin/profile')

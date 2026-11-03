@@ -8,6 +8,21 @@ use Tests\TestCase;
 
 class TrustedProxyConfigurationTest extends TestCase
 {
+    public function test_forwarded_headers_are_ignored_when_no_proxy_is_configured(): void
+    {
+        config(['trustedproxy.proxies' => null]);
+        $request = Request::create('http://api.example.test/health', 'GET', [], [], [], [
+            'REMOTE_ADDR' => '203.0.113.15',
+            'HTTP_X_FORWARDED_FOR' => '198.51.100.24',
+            'HTTP_X_FORWARDED_PROTO' => 'https',
+        ]);
+
+        app(TrustProxies::class)->handle($request, fn (Request $request) => $request->getClientIp());
+
+        $this->assertSame('203.0.113.15', $request->getClientIp());
+        $this->assertSame('http', $request->getScheme());
+    }
+
     public function test_only_configured_proxies_can_forward_the_client_ip(): void
     {
         config(['trustedproxy.proxies' => ['10.20.0.10']]);

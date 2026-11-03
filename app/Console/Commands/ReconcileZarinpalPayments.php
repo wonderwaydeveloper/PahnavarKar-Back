@@ -43,6 +43,21 @@ class ReconcileZarinpalPayments extends Command
             ->distinct()
             ->pluck('gateway_environment');
 
+        $missingMerchantSnapshots = PaymentAttempt::query()
+            ->where('gateway', 'zarinpal')
+            ->whereIn('status', ['pending', 'initiation_unknown'])
+            ->whereNull('gateway_merchant_id')
+            ->count();
+        if ($missingMerchantSnapshots > 0) {
+            Log::warning('Zarinpal attempts without a merchant ID snapshot require manual reconciliation.', [
+                'count' => $missingMerchantSnapshots,
+            ]);
+            $this->warn(
+                $missingMerchantSnapshots.' Zarinpal attempt(s) have no merchant ID snapshot and require manual reconciliation.',
+            );
+            $failed = true;
+        }
+
         if ($environments->isEmpty()) {
             $this->info('No Zarinpal attempts with a known authority require reconciliation.');
 
@@ -64,18 +79,34 @@ class ReconcileZarinpalPayments extends Command
             }
 
             $processed = 0;
+            $currentMerchantId = null;
+            $authorities = [];
 
             try {
-                $authorities = $gateway->unverifiedAuthorities($environment);
+                $currentMerchantId = $gateway->configuredMerchantId($environment);
             } catch (PaymentGatewayUnavailableException $exception) {
-                Log::error('Zarinpal payment reconciliation could not retrieve unverified authorities.', [
+                Log::warning('Zarinpal merchant configuration is unavailable for unverified-payment reconciliation.', [
                     'environment' => $environment,
                     'exception' => $exception,
                 ]);
-                $this->error("Could not query Zarinpal {$environment} unverified payments.");
-                $failed = true;
+                $this->warn(
+                    "Could not load Zarinpal {$environment} merchant configuration; saved attempts will still be reconciled individually.",
+                );
+            }
 
-                continue;
+            if ($currentMerchantId !== null) {
+                try {
+                    $authorities = $gateway->unverifiedAuthorities($environment);
+                } catch (PaymentGatewayUnavailableException $exception) {
+                    Log::error('Zarinpal payment reconciliation could not retrieve unverified authorities.', [
+                        'environment' => $environment,
+                        'exception' => $exception,
+                    ]);
+                    $this->error("Could not query Zarinpal {$environment} unverified payments.");
+                    $failed = true;
+
+                    continue;
+                }
             }
 
             foreach ($authorities as $authority) {
@@ -86,6 +117,7 @@ class ReconcileZarinpalPayments extends Command
                 $attempt = PaymentAttempt::query()
                     ->where('gateway', 'zarinpal')
                     ->where('gateway_environment', $environment)
+                    ->where('gateway_merchant_id', $currentMerchantId)
                     ->where('gateway_reference_id', $authority)
                     ->whereIn('status', ['pending', 'initiation_unknown'])
                     ->where(function ($query): void {
@@ -134,6 +166,7 @@ class ReconcileZarinpalPayments extends Command
                 ->where('gateway', 'zarinpal')
                 ->where('gateway_environment', $environment)
                 ->whereIn('status', ['pending', 'initiation_unknown'])
+                ->whereNotNull('gateway_merchant_id')
                 ->whereNotNull('gateway_reference_id')
                 ->where(function ($query): void {
                     $query->whereNull('last_reconciled_at')
@@ -163,12 +196,15 @@ class ReconcileZarinpalPayments extends Command
 
                 if (! in_array($status, ['PAID', 'VERIFIED'], true)) {
                     if (in_array($status, ['FAILED', 'REVERSED'], true)) {
-                        Log::warning('Zarinpal inquiry returned a non-success terminal status requiring review.', [
+                        $payments->failConfirmedGatewayAttempt(
+                            (int) $attempt->getKey(),
+                            'inquiry_'.strtolower($status),
+                        );
+                        Log::info('Zarinpal confirmed a failed payment attempt.', [
                             'attempt_id' => $attempt->getKey(),
                             'status' => $status,
                         ]);
-                        $this->warn("Attempt {$attempt->getKey()} requires review ({$status}).");
-                        $failed = true;
+                        $this->info("Attempt {$attempt->getKey()} was confirmed failed ({$status}).");
                     }
 
                     continue;

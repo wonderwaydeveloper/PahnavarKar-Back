@@ -10,6 +10,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class OtpProgressiveLockoutTest extends TestCase
@@ -63,6 +64,45 @@ class OtpProgressiveLockoutTest extends TestCase
 
             RateLimiter::clear('otp-attempts:'.hash('sha256', $phone.':login'));
         }
+    }
+
+    public function test_higher_threshold_locks_survive_concurrent_failures_that_passed_an_earlier_lock_check(): void
+    {
+        $service = app(OtpService::class);
+        $phone = '+989121234577';
+
+        foreach (range(1, 3) as $_) {
+            $service->recordFailedVerification($phone, 'login');
+        }
+
+        $this->assertSame(300, $service->availableLockSeconds($phone, 'login'));
+
+        foreach (range(4, 6) as $_) {
+            $service->recordFailedVerification($phone, 'login');
+        }
+
+        $this->assertSame(3600, $service->availableLockSeconds($phone, 'login'));
+
+        foreach (range(7, 10) as $_) {
+            $service->recordFailedVerification($phone, 'login');
+        }
+
+        $this->assertSame(86400, $service->availableLockSeconds($phone, 'login'));
+    }
+
+    public function test_existing_lock_keys_remain_enforced_and_are_cleared_after_key_version_change(): void
+    {
+        $service = app(OtpService::class);
+        $phone = '+989121234578';
+        $legacyLockKey = 'otp-lock:'.hash('sha256', $phone.':login');
+
+        RateLimiter::hit($legacyLockKey, 3600);
+
+        $this->assertGreaterThan(0, $service->availableLockSeconds($phone, 'login'));
+
+        $service->clearFailedVerifications($phone, 'login');
+
+        $this->assertSame(0, $service->availableLockSeconds($phone, 'login'));
     }
 
     public function test_missing_code_is_rejected_without_counting_an_otp_failure(): void
@@ -173,6 +213,52 @@ class OtpProgressiveLockoutTest extends TestCase
         $this->assertAuthenticatedAs($user, 'web');
         $this->assertTrue($otp->fresh()->used);
         $this->assertSame(0, app(OtpService::class)->availableLockSeconds($user->phone, 'login'));
+    }
+
+    public function test_login_failures_share_lockout_across_api_phone_change_account_deletion_and_admin_web(): void
+    {
+        $phone = '+989121234576';
+        $user = $this->userFor($phone);
+        $user->assignRole(Role::findOrCreate('Owner', 'web'));
+        $token = $user->createToken('test-device')->plainTextToken;
+        $otp = $this->createOtp($user, now()->addHour());
+
+        $this->postJson('/api/v1/auth/otp/verify', [
+            'phone' => $phone,
+            'type' => 'login',
+            'code' => '000000',
+            'device_id' => (string) Str::uuid(),
+        ])->assertUnprocessable();
+
+        $this->postJson('/api/v1/auth/profile/phone', [
+            'phone' => $phone,
+            'code' => '000000',
+        ], ['Authorization' => 'Bearer '.$token])->assertUnprocessable();
+
+        $this->deleteJson('/api/v1/auth/account', ['code' => '000000'], [
+            'Authorization' => 'Bearer '.$token,
+        ])->assertUnprocessable();
+
+        $service = app(OtpService::class);
+        $this->assertSame(3, $otp->fresh()->attempts);
+        $this->assertSame(300, $service->availableLockSeconds($phone, 'login'));
+        $this->withSession(['admin_login_phone' => $phone])
+            ->post(route('admin.login.verify.submit'), ['code' => '123456'])
+            ->assertSessionHasErrors('code');
+
+        $this->assertGuest('web');
+        $this->assertFalse($otp->fresh()->used);
+        $this->assertDatabaseCount('personal_access_tokens', 1);
+
+        $this->travel(300)->seconds();
+
+        $this->withSession(['admin_login_phone' => $phone])
+            ->post(route('admin.login.verify.submit'), ['code' => '123456'])
+            ->assertRedirect(route('admin.dashboard'));
+
+        $this->assertAuthenticatedAs($user, 'web');
+        $this->assertTrue($otp->fresh()->used);
+        $this->assertSame(0, $service->availableLockSeconds($phone, 'login'));
     }
 
     public function test_expired_admin_otp_does_not_clear_prior_failed_attempts(): void

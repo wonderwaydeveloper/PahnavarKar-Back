@@ -4,6 +4,32 @@ import AdminMobileNavigation from '../../../Components/AdminMobileNavigation';
 import AdminSidebar from '../../../Components/AdminSidebar';
 import ThemeSwitcher from '../../../Components/ThemeSwitcher';
 
+function sanitizePhoneInput(value) {
+    return value
+        .replace(/[۰-۹٠-٩]/g, digit => String.fromCharCode(
+            digit.charCodeAt(0) >= 0x06f0 && digit.charCodeAt(0) <= 0x06f9
+                ? digit.charCodeAt(0) - 0x06f0 + 48
+                : digit.charCodeAt(0) - 0x0660 + 48,
+        ))
+        .replace(/\D/g, '');
+}
+
+function getIranianNationalNumber(value) {
+    let digits = sanitizePhoneInput(value);
+
+    if (digits.startsWith('0098')) {
+        digits = digits.slice(4);
+    } else if (digits.startsWith('98')) {
+        digits = digits.slice(2);
+    }
+
+    if (digits.startsWith('0') && digits.length > 1) {
+        digits = digits.slice(1);
+    }
+
+    return digits;
+}
+
 function Panel({ id, title, description, children }) {
     return (
         <section id={id} className="scroll-mt-24 rounded-3xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-7">
@@ -41,11 +67,15 @@ const sectionDetails = {
     },
     wallet: {
         title: 'کیف پول و برداشت',
-        description: 'تنظیم سقف درخواست‌های برداشت و فعال یا غیرفعال‌کردن ثبت درخواست جدید.',
+        description: 'تنظیم سقف برداشت و روش پردازش درخواست‌ها. پرداخت خودکار تا اتصال سرویس بانکی در دسترس نیست.',
     },
     gateways: {
         title: 'درگاه‌های پرداخت',
         description: 'انتخاب درگاه پیش‌فرض و تنظیم ترتیب جایگزین برای پرداخت‌ها.',
+    },
+    sms: {
+        title: 'سرویس پیامک',
+        description: 'انتخاب سرویس فعال برای ارسال OTP و پیام‌های سیستمی. اعتبارنامه‌ها فقط در secretهای محیط سرور نگه‌داری می‌شوند.',
     },
     'site-content': {
         title: 'محتوای سایت',
@@ -53,7 +83,7 @@ const sectionDetails = {
     },
 };
 
-export default function Index({ admin, section, permissions, plans, featureGroups, wallet, gateways, siteContent }) {
+export default function Index({ admin, section, permissions, plans, featureGroups, wallet, gateways, smsProviders, siteContent }) {
     const { app, flash } = usePage().props;
     const currentSection = sectionDetails[section];
     const plansForm = useForm({
@@ -72,15 +102,27 @@ export default function Index({ admin, section, permissions, plans, featureGroup
             ),
         },
     });
-    const walletForm = useForm(wallet ?? { enabled: false, max_per_request: 0, max_per_day: 0 });
+    const walletForm = useForm({
+        enabled: Boolean(wallet?.enabled),
+        max_per_request: wallet?.max_per_request ?? 0,
+        max_per_day: wallet?.max_per_day ?? 0,
+        processing_mode: wallet?.processing_mode ?? 'manual',
+    });
     const gatewayForm = useForm({
         default_gateway: gateways?.default_gateway ?? '',
         enabled_gateways: gateways?.enabled_gateways ?? [],
         failover_order: gateways?.failover_order ?? [],
     });
+    const smsProviderForm = useForm({
+        provider: smsProviders?.active_provider_configured
+            ? smsProviders.active_provider
+            : Object.keys(smsProviders?.configured_providers ?? {})[0] ?? '',
+    });
+    const smsTestForm = useForm({ phone: '' });
     const siteForm = useForm(siteContent ?? {});
     const configuredGateways = gateways?.configured_gateways ?? [];
     const availableGateways = gateways?.available_gateways ?? [];
+    const configuredSmsProviders = smsProviders?.configured_providers ?? {};
 
     function toggleGateway(field, gateway, checked) {
         const values = gatewayForm.data[field];
@@ -96,6 +138,18 @@ export default function Index({ admin, section, permissions, plans, featureGroup
             return;
         }
         gatewayForm.setData(field, nextValues);
+    }
+
+    function submitSmsTest(event) {
+        event.preventDefault();
+        const nationalNumber = getIranianNationalNumber(smsTestForm.data.phone);
+
+        smsTestForm
+            .transform(data => ({ ...data, phone: `+98${nationalNumber}` }))
+            .post('/admin/settings/sms-test', {
+                preserveScroll: true,
+                onSuccess: () => smsTestForm.reset('phone'),
+            });
     }
 
     return (
@@ -221,13 +275,24 @@ export default function Index({ admin, section, permissions, plans, featureGroup
                         </form>
                     </Panel>}
 
-                    {section === 'wallet' && permissions.wallet && <Panel id="wallet" title="کیف پول و برداشت" description="غیرفعال‌کردن برداشت درخواست‌های تازه را می‌بندد؛ درخواست‌های موجود همچنان در صف بررسی باقی می‌مانند. سقف‌ها بر حسب تومان هستند.">
+                    {section === 'wallet' && permissions.wallet && <Panel id="wallet" title="کیف پول و برداشت" description="غیرفعال‌کردن برداشت، درخواست‌های تازه را می‌بندد؛ درخواست‌های موجود روش پردازش ثبت‌شدهٔ خود را حفظ می‌کنند. سقف‌ها بر حسب تومان هستند.">
                         <form onSubmit={event => { event.preventDefault(); walletForm.put('/admin/settings/wallet', { preserveScroll: true }); }}>
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <label className="flex min-h-11 items-center gap-3 rounded-xl border border-slate-200 px-4 text-xs font-semibold text-slate-700 sm:col-span-2">
                                     <input type="checkbox" checked={Boolean(walletForm.data.enabled)} onChange={event => walletForm.setData('enabled', event.target.checked)} className="size-4 accent-indigo-600" />
                                     ثبت درخواست برداشت فعال باشد
                                 </label>
+                                <Field label="روش پردازش درخواست‌های جدید" error={walletForm.errors.processing_mode}>
+                                    <select value={walletForm.data.processing_mode} onChange={event => walletForm.setData('processing_mode', event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-indigo-400">
+                                        <option value="manual">دستی — بررسی و انتقال توسط اپراتور</option>
+                                        <option value="automatic" disabled={!wallet?.automatic_mode_available}>خودکار — نیازمند سرویس بانکی متصل</option>
+                                    </select>
+                                </Field>
+                                <p className="self-end rounded-xl bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800 sm:col-span-2">
+                                    {wallet?.automatic_mode_available
+                                        ? 'سرویس پرداخت خودکار آماده است؛ روش انتخابی فقط روی درخواست‌های جدید اعمال می‌شود.'
+                                        : 'پرداخت خودکار فعلاً قفل است: هنوز سرویس بانکی خروجی متصل و تأیید نشده. تغییر دستی به خودکار از درخواست مستقیم نیز رد می‌شود.'}
+                                </p>
                                 <Field label="حداکثر مبلغ هر درخواست (تومان)" error={walletForm.errors.max_per_request}>
                                     <input required type="number" min="1" value={walletForm.data.max_per_request} onChange={event => walletForm.setData('max_per_request', event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-indigo-400" />
                                 </Field>
@@ -285,6 +350,61 @@ export default function Index({ admin, section, permissions, plans, featureGroup
                                 <div className="mt-5"><SaveButton processing={gatewayForm.processing} /></div>
                             </form>
                         </>}
+                    </Panel>}
+
+                    {section === 'sms' && permissions.smsProviders && <Panel id="sms" title="سرویس ارسال پیامک" description="سرویس انتخاب‌شده برای OTP و هشدارهای پیامکی را تغییر دهید. تغییر انتخاب بلافاصله برای پیام‌های جدید اعمال می‌شود.">
+                        {Object.keys(configuredSmsProviders).length === 0 ? <p className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800">هیچ سرویس پیامکی آماده نیست. ابتدا کلیدها و تنظیمات provider را به‌صورت امن در محیط سرور پیکربندی کنید؛ این پنل secretها را دریافت یا نمایش نمی‌دهد.</p> : <>
+                            {!smsProviders?.active_provider_configured && <p role="alert" className="mb-4 rounded-xl bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800">سرویس فعلی از تنظیمات محیط سرور آماده نیست. برای جلوگیری از خطای ارسال، یک سرویس آماده انتخاب و ذخیره کنید.</p>}
+                            <form onSubmit={event => { event.preventDefault(); smsProviderForm.put('/admin/settings/sms-provider', { preserveScroll: true }); }}>
+                                <Field label="سرویس فعال" error={smsProviderForm.errors.provider}>
+                                    <select required value={smsProviderForm.data.provider} onChange={event => smsProviderForm.setData('provider', event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-indigo-400 sm:max-w-md">
+                                        {Object.entries(configuredSmsProviders).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                                    </select>
+                                </Field>
+                                <p className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-600">
+                                    کلید API و سایر secretها در پنل ذخیره یا نمایش داده نمی‌شوند. فقط providerهایی قابل انتخاب‌اند که در محیط سرور فعال و کامل پیکربندی شده باشند.
+                                </p>
+                                <div className="mt-5"><SaveButton processing={smsProviderForm.processing} label="تغییر سرویس پیامک" /></div>
+                            </form>
+                        </>}
+                        {(smsProviders?.test_available || Object.keys(configuredSmsProviders).length > 0) && <div className="mt-7 border-t border-slate-200 pt-6">
+                            <h3 className="text-sm font-bold text-slate-900">ارسال پیامک آزمایشی</h3>
+                            <p className="mt-2 text-xs leading-6 text-slate-500">پیام ثابت آزمون فقط به شمارهٔ واردشده ارسال می‌شود و کد ورود ندارد. هر ادمین و هر شماره حداکثر یک بار در دقیقه و ۵ بار در ساعت قابل آزمایش‌اند.</p>
+                            {smsProviders?.test_mode === 'local_log' && <p className="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800">حالت ثبت محلی فعال است؛ درخواست آزمون در log ثبت می‌شود و پیامک واقعی ارسال نخواهد شد.</p>}
+                            {!smsProviders?.test_available && smsProviders?.test_mode !== 'local_log' && (
+                                <p className="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800">
+                                    آزمون برای provider فعال آماده نیست. در ملی‌پیامک، قالب تأییدشدهٔ بدون متغیر را در MELIPAYAMAK_TEST_BODY_ID تنظیم کنید؛ در کاوه‌نگار، فعال‌بودن کلید API را بررسی کنید.
+                                </p>
+                            )}
+                            <form onSubmit={submitSmsTest} className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-end">
+                                <div className="w-full sm:max-w-sm">
+                                    <Field label="شمارهٔ مقصد" error={smsTestForm.errors.phone}>
+                                        <span className="sr-only" id="sms-test-phone-country-code">پیش‌شمارهٔ ایران +98</span>
+                                        <span className="mt-2 flex min-h-16 w-full items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 focus-within:border-indigo-400">
+                                            <input
+                                                required
+                                                aria-label="شمارهٔ موبایل ایران بدون پیش‌شماره"
+                                                aria-describedby="sms-test-phone-country-code"
+                                                type="tel"
+                                                inputMode="tel"
+                                                autoComplete="tel-national"
+                                                dir="ltr"
+                                                maxLength="20"
+                                                placeholder="9123456789"
+                                                value={smsTestForm.data.phone}
+                                                onChange={event => smsTestForm.setData('phone', sanitizePhoneInput(event.target.value))}
+                                                className="min-h-[52px] min-w-0 flex-1 bg-transparent text-left text-[17px] outline-none"
+                                            />
+                                            <span aria-hidden="true" className="flex min-h-8 items-center border-r border-slate-200 pr-2 text-sm font-bold text-slate-600">+98</span>
+                                        </span>
+                                    </Field>
+                                </div>
+                                <button type="submit" disabled={smsTestForm.processing || !smsProviders?.test_available} className="h-11 shrink-0 rounded-xl bg-emerald-600 px-5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
+                                    {smsTestForm.processing ? 'در حال ارسال…' : 'ارسال پیام آزمایشی'}
+                                </button>
+                                {smsTestForm.errors.test && <p role="alert" className="text-xs text-rose-600">{smsTestForm.errors.test}</p>}
+                            </form>
+                        </div>}
                     </Panel>}
 
                     {section === 'site-content' && permissions.siteContent && <Panel id="site-content" title="محتوای اصلی سایت" description="این مقادیر در عنوان صفحه، توضیحات موتور جست‌وجو و بخش معرفی صفحهٔ اصلی استفاده می‌شوند.">

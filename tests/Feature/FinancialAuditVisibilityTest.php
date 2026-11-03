@@ -51,6 +51,14 @@ class FinancialAuditVisibilityTest extends TestCase
                     'balance' => 12345,
                     'currency' => 'TEST-CURRENCY',
                     'unit' => 'test-unit',
+                    'bank_account_iban_masked' => null,
+                    'top_up_min_amount' => config('payment.min_top_up'),
+                    'top_up_max_amount' => config('payment.max_top_up'),
+                    'withdrawals' => [
+                        'enabled' => false,
+                        'max_per_request' => 100000,
+                        'max_per_day' => 500000,
+                    ],
                 ],
             ]);
 
@@ -96,16 +104,45 @@ class FinancialAuditVisibilityTest extends TestCase
         ]);
     }
 
-    public function test_regular_user_wallet_history_does_not_expose_balance_snapshot(): void
+    public function test_regular_user_wallet_history_exposes_its_historical_balance_snapshot(): void
     {
-        $user = User::factory()->create(['is_active' => true]);
-        $this->createTransaction($user);
+        $user = User::factory()->create([
+            'is_active' => true,
+            'wallet_balance' => 22000,
+        ]);
+        $this->createTransaction($user, [
+            'gateway' => 'zarinpal',
+            'reference_id' => 'verified-provider-reference',
+            'balance_after' => 15000,
+        ]);
 
         $this->actingAs($user, 'sanctum')
             ->getJson('/api/v1/auth/wallet/transactions')
             ->assertOk()
             ->assertJsonPath('data.0.amount', 2500)
-            ->assertJsonMissingPath('data.0.balance_after');
+            ->assertJsonPath('data.0.balance_after', 15000)
+            ->assertJsonPath('data.0.gateway', 'zarinpal')
+            ->assertJsonPath('data.0.tracking_reference', 'verified-provider-reference')
+            ->assertJsonMissingPath('data.0.reference_id')
+            ->assertJsonMissingPath('data.0.user_id');
+
+        $this->assertSame(22000, $user->fresh()->wallet_balance);
+    }
+
+    public function test_wallet_history_does_not_expose_tracking_reference_for_unverified_transactions(): void
+    {
+        $user = User::factory()->create(['is_active' => true]);
+        $this->createTransaction($user, [
+            'status' => 'pending',
+            'gateway' => 'zarinpal',
+            'reference_id' => 'unverified-provider-reference',
+        ]);
+
+        $this->actingAs($user, 'sanctum')
+            ->getJson('/api/v1/auth/wallet/transactions')
+            ->assertOk()
+            ->assertJsonPath('data.0.tracking_reference', null)
+            ->assertJsonMissingPath('data.0.reference_id');
     }
 
     public function test_wallet_history_is_user_scoped_newest_first_and_paginated_with_allowlisted_fields(): void
@@ -146,7 +183,8 @@ class FinancialAuditVisibilityTest extends TestCase
             ->assertJsonPath('data.1.id', $ownedTransactions[1]->getKey())
             ->assertJsonPath('data.0.amount', 300)
             ->assertJsonPath('data.1.amount', 200)
-            ->assertJsonMissingPath('data.0.balance_after')
+            ->assertJsonPath('data.0.balance_after', $ownedTransactions[2]->balance_after)
+            ->assertJsonPath('data.1.balance_after', $ownedTransactions[1]->balance_after)
             ->assertJsonMissingPath('data.0.idempotency_key')
             ->assertJsonMissingPath('data.0.user_id')
             ->assertJsonMissingPath('data.0.reference_id')
@@ -154,7 +192,7 @@ class FinancialAuditVisibilityTest extends TestCase
 
         foreach ($response->json('data') as $transaction) {
             $this->assertSame(
-                ['id', 'type', 'status', 'amount', 'currency', 'description', 'created_at'],
+                ['id', 'type', 'status', 'amount', 'balance_after', 'currency', 'gateway', 'tracking_reference', 'description', 'created_at'],
                 array_keys($transaction),
             );
         }

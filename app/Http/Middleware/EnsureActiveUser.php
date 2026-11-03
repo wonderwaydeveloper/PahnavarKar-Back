@@ -17,20 +17,40 @@ class EnsureActiveUser
             return $next($request);
         }
 
+        $revokeSessions = $user->suspension_revoke_sessions ?? true;
+        if (
+            ! $revokeSessions
+            && in_array($request->path(), [
+                'api/v1/auth/logout',
+                'api/v1/auth/logout-all',
+                'admin/logout',
+            ], true)
+        ) {
+            return $next($request);
+        }
+
         if ($request->is('api/*') || $request->expectsJson()) {
-            $user->tokens()->delete();
+            if ($revokeSessions) {
+                $user->tokens()->delete();
+            }
 
             return response()->json([
                 'message' => 'دسترسی این حساب غیرفعال شده است.',
                 'code' => 'account_disabled',
+                'restriction_reason' => $user->account_status_reason,
+                'suspended_until' => $user->suspended_until?->toIso8601String(),
             ], Response::HTTP_FORBIDDEN);
         }
 
-        Auth::guard('web')->logout();
-        $request->session()->invalidate();
-        $request->session()->regenerateToken();
+        if ($revokeSessions) {
+            Auth::guard('web')->logout();
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
 
-        return redirect()->route('admin.login')
-            ->withErrors(['phone' => 'دسترسی این حساب غیرفعال شده است.']);
+            return redirect()->route('admin.login')
+                ->withErrors(['phone' => 'دسترسی این حساب غیرفعال شده است.']);
+        }
+
+        return response('دسترسی این حساب به‌صورت موقت تعلیق شده است.', Response::HTTP_FORBIDDEN);
     }
 }

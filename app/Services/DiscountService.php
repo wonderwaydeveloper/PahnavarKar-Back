@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Exceptions\DiscountNotValidException;
+use App\Exceptions\SubscriptionConflictException;
 use App\Models\DiscountCode;
 use App\Models\DiscountUsage;
 use App\Models\PaymentAttempt;
@@ -174,10 +175,60 @@ class DiscountService
         });
     }
 
+    public function refundConsumedReservation(PaymentOrder $order): void
+    {
+        DB::transaction(function () use ($order): void {
+            if ($order->discount_code_id === null) {
+                return;
+            }
+
+            $discount = DiscountCode::query()
+                ->whereKey($order->discount_code_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $usage = DiscountUsage::query()
+                ->where('payment_order_id', $order->getKey())
+                ->where('user_id', $order->user_id)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $usage || $usage->discount_code_id !== $discount->getKey()) {
+                throw new SubscriptionConflictException(
+                    'سابقهٔ مصرف کد تخفیف سفارش برای بازپرداخت پیدا نشد.',
+                );
+            }
+            if ($usage->status === 'refunded') {
+                return;
+            }
+            if (
+                $usage->status !== 'consumed'
+                || $usage->discount_amount !== $order->discount_amount
+                || $usage->order_amount !== $order->gross_amount
+            ) {
+                throw new SubscriptionConflictException(
+                    'وضعیت مصرف کد تخفیف با سفارش قابل بازپرداخت مطابقت ندارد.',
+                );
+            }
+            if ($discount->usage_count < 1) {
+                throw new SubscriptionConflictException(
+                    'شمارندهٔ مصرف کد تخفیف با سابقهٔ سفارش مطابقت ندارد.',
+                );
+            }
+
+            $usage->forceFill(['status' => 'refunded'])->saveOrFail();
+            $discount->decrement('usage_count');
+        });
+    }
+
     private function assertEligible(User $user, DiscountCode $discount, int $orderAmount): void
     {
-        if ($discount->user_id !== null && $discount->user_id !== $user->getKey()) {
-            throw new DiscountNotValidException('این کد تخفیف برای این حساب کاربری در دسترس نیست.');
+        if ($discount->is_user_restricted || $discount->user_id !== null) {
+            $isAssignedToUser = $discount->user_id === $user->getKey()
+                || $discount->users()->whereKey($user->getKey())->exists();
+
+            if (! $isAssignedToUser) {
+                throw new DiscountNotValidException('این کد تخفیف برای این حساب کاربری در دسترس نیست.');
+            }
         }
         if ($orderAmount < $discount->min_order_amount) {
             throw new DiscountNotValidException('مبلغ سفارش به حداقل مبلغ لازم برای تخفیف نمی‌رسد.');

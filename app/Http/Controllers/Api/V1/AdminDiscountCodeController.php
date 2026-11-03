@@ -22,6 +22,7 @@ class AdminDiscountCodeController extends Controller
 
         $codes = DiscountCode::query()
             ->with('user:id,name,phone')
+            ->with('users:id,name,phone')
             ->withCount(['usages' => fn ($query) => $query->whereIn('status', ['reserved', 'consumed'])])
             ->when(isset($filters['is_active']), fn ($query) => $query->where('is_active', $filters['is_active']))
             ->when(isset($filters['type']), fn ($query) => $query->where('type', $filters['type']))
@@ -37,14 +38,14 @@ class AdminDiscountCodeController extends Controller
     {
         $code = $discountCodes->create($request);
 
-        return response()->json(['discount' => $code->load('user:id,name,phone')], 201);
+        return response()->json(['discount' => $code->load(['user:id,name,phone', 'users:id,name,phone'])], 201);
     }
 
     public function update(Request $request, DiscountCode $discountCode, DiscountCodeManagementService $discountCodes): JsonResponse
     {
         $discountCode = $discountCodes->update($request, $discountCode);
 
-        return response()->json(['discount' => $discountCode->fresh()->load('user:id,name,phone')]);
+        return response()->json(['discount' => $discountCode->fresh()->load(['user:id,name,phone', 'users:id,name,phone'])]);
     }
 
     public function usages(Request $request, DiscountCode $discountCode): JsonResponse

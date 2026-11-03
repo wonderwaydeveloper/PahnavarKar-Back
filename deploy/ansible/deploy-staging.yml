@@ -1,0 +1,285 @@
+---
+- name: Deploy PahnavarKar staging release
+  hosts: all
+  gather_facts: false
+
+  vars:
+    web_group: www-data
+    releases_path: "{{ app_root }}/releases"
+    shared_storage_path: "{{ app_root }}/shared/storage"
+    current_path: "{{ app_root }}/current"
+    activation_link_path: "{{ app_root }}/.current-{{ release_id }}"
+    release_path: "{{ releases_path }}/{{ release_id }}"
+
+  tasks:
+    - name: Validate deployment inputs
+      ansible.builtin.assert:
+        that:
+          - app_root is match('^/var/www/[A-Za-z0-9._/-]+$')
+          - "app_root.rstrip('/') != '/var/www'"
+          - "'.' not in app_root.split('/')"
+          - "'..' not in app_root.split('/')"
+          - release_id is match('^[0-9]{10}-[0-9]{3}-[a-f0-9]{40}$')
+          - deploy_user is match('^[a-z_][a-z0-9_-]*$')
+          - healthcheck_url is match('^https://[^/]+/up/?$')
+        fail_msg: "Refusing deployment because one or more staging inputs are invalid."
+
+    - name: Check the release archive on the runner
+      ansible.builtin.stat:
+        path: "{{ artifact_path }}"
+      delegate_to: localhost
+      become: false
+      register: release_archive
+
+    - name: Check the staging environment file on the runner
+      ansible.builtin.stat:
+        path: "{{ environment_file_path }}"
+      delegate_to: localhost
+      become: false
+      register: staging_environment
+
+    - name: Require release inputs
+      ansible.builtin.assert:
+        that:
+          - release_archive.stat.isreg | default(false)
+          - staging_environment.stat.isreg | default(false)
+        fail_msg: "The release archive or staging environment file is unavailable."
+
+    - name: Inspect the current release link
+      ansible.builtin.stat:
+        path: "{{ current_path }}"
+      register: previous_current
+
+    - name: Refuse to replace an unexpected current path
+      ansible.builtin.assert:
+        that:
+          - not previous_current.stat.exists | default(false) or previous_current.stat.islnk | default(false)
+          - not previous_current.stat.islnk | default(false) or previous_current.stat.lnk_source.startswith(releases_path + '/')
+        fail_msg: "The current path must be absent or point to a release below the configured releases directory."
+
+    - name: Record the previous release target
+      ansible.builtin.set_fact:
+        previous_release_path: "{{ previous_current.stat.lnk_source | default('') }}"
+
+    - name: Create the application release directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ web_group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ app_root }}"
+          mode: "0750"
+        - path: "{{ releases_path }}"
+          mode: "0750"
+        - path: "{{ app_root }}/shared"
+          mode: "0750"
+        - path: "{{ shared_storage_path }}"
+          mode: "2770"
+
+    - name: Create persistent Laravel storage directories
+      ansible.builtin.file:
+        path: "{{ shared_storage_path }}/{{ item }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ web_group }}"
+        mode: "2770"
+      loop:
+        - app/private
+        - app/public
+        - app/backup-temp
+        - framework/cache/data
+        - framework/cache/locks
+        - framework/sessions
+        - framework/views
+        - logs
+
+    - name: Deploy and verify the new release
+      block:
+        - name: Create the release directory
+          ansible.builtin.file:
+            path: "{{ release_path }}"
+            state: directory
+            owner: "{{ deploy_user }}"
+            group: "{{ web_group }}"
+            mode: "0750"
+
+        - name: Unpack the tested release
+          ansible.builtin.unarchive:
+            src: "{{ artifact_path }}"
+            dest: "{{ release_path }}"
+            owner: "{{ deploy_user }}"
+            group: "{{ web_group }}"
+            remote_src: false
+
+        - name: Restrict release file permissions
+          ansible.builtin.file:
+            path: "{{ release_path }}"
+            state: directory
+            owner: "{{ deploy_user }}"
+            group: "{{ web_group }}"
+            mode: "u=rwX,g=rX,o="
+            recurse: true
+
+        - name: Install the staging environment in this release
+          ansible.builtin.copy:
+            src: "{{ environment_file_path }}"
+            dest: "{{ release_path }}/.env"
+            owner: "{{ deploy_user }}"
+            group: "{{ web_group }}"
+            mode: "0640"
+
+        - name: Link persistent storage into the release
+          ansible.builtin.file:
+            src: "{{ shared_storage_path }}"
+            dest: "{{ release_path }}/storage"
+            state: link
+
+        - name: Link public uploads into the release
+          ansible.builtin.file:
+            src: "{{ shared_storage_path }}/app/public"
+            dest: "{{ release_path }}/public/storage"
+            state: link
+
+        - name: Prepare Laravel's bootstrap cache directory
+          ansible.builtin.file:
+            path: "{{ release_path }}/bootstrap/cache"
+            state: directory
+            owner: "{{ deploy_user }}"
+            group: "{{ web_group }}"
+            mode: "2750"
+
+        - name: Run staging database migrations
+          ansible.builtin.command:
+            argv:
+              - php
+              - artisan
+              - migrate
+              - --force
+            chdir: "{{ release_path }}"
+          changed_when: true
+
+        - name: Cache Laravel configuration
+          ansible.builtin.command:
+            argv:
+              - php
+              - artisan
+              - config:cache
+            chdir: "{{ release_path }}"
+          changed_when: true
+
+        - name: Prepare the release activation link
+          ansible.builtin.command:
+            argv:
+              - ln
+              - -sfnT
+              - "{{ release_path }}"
+              - "{{ activation_link_path }}"
+          changed_when: true
+
+        - name: Atomically activate the release
+          ansible.builtin.command:
+            argv:
+              - mv
+              - -Tf
+              - "{{ activation_link_path }}"
+              - "{{ current_path }}"
+          changed_when: true
+
+        - name: Gracefully restart queue workers
+          ansible.builtin.command:
+            argv:
+              - php
+              - artisan
+              - queue:restart
+            chdir: "{{ current_path }}"
+          changed_when: true
+
+        - name: Verify the staging application health endpoint
+          ansible.builtin.uri:
+            url: "{{ healthcheck_url }}"
+            method: GET
+            status_code: 200
+            validate_certs: true
+            timeout: 10
+          delegate_to: localhost
+          become: false
+          register: healthcheck
+          until: healthcheck.status | default(0) == 200
+          retries: 12
+          delay: 5
+          changed_when: false
+
+      rescue:
+        - name: Prepare the previous release link for rollback
+          ansible.builtin.command:
+            argv:
+              - ln
+              - -sfnT
+              - "{{ previous_release_path }}"
+              - "{{ activation_link_path }}"
+          when: previous_release_path | length > 0
+          changed_when: true
+
+        - name: Atomically restore the previous release
+          ansible.builtin.command:
+            argv:
+              - mv
+              - -Tf
+              - "{{ activation_link_path }}"
+              - "{{ current_path }}"
+          when: previous_release_path | length > 0
+          changed_when: true
+
+        - name: Remove the failed first release link
+          ansible.builtin.file:
+            path: "{{ current_path }}"
+            state: absent
+          when: previous_release_path | length == 0
+
+        - name: Remove any unused activation link
+          ansible.builtin.file:
+            path: "{{ activation_link_path }}"
+            state: absent
+
+        - name: Restart workers against the restored release
+          ansible.builtin.command:
+            argv:
+              - php
+              - artisan
+              - queue:restart
+            chdir: "{{ current_path }}"
+          when: previous_release_path | length > 0
+          changed_when: true
+
+        - name: Fail after attempting release rollback
+          ansible.builtin.fail:
+            msg: "Staging deployment failed. The previous application release was restored when one was available; database migrations are not rolled back."
+
+    - name: Find deployed releases for retention
+      ansible.builtin.find:
+        paths: "{{ releases_path }}"
+        file_type: directory
+        recurse: false
+      register: deployed_releases
+
+    - name: Keep the newest releases and the previous rollback target
+      ansible.builtin.set_fact:
+        retained_release_paths: >-
+          {{
+            (
+              deployed_releases.files
+              | map(attribute='path')
+              | sort(reverse=true)
+              | list
+            )[:5]
+            + ([previous_release_path] if previous_release_path else [])
+          }}
+
+    - name: Remove old releases outside the retention window
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ deployed_releases.files | map(attribute='path') | list }}"
+      when: item not in retained_release_paths

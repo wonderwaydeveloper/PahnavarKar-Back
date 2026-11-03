@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
 use Spatie\Activitylog\Support\LogOptions;
@@ -22,6 +23,7 @@ class DiscountCode extends Model
         'usage_limit',
         'usage_count',
         'user_id',
+        'is_user_restricted',
         'starts_at',
         'expires_at',
         'is_active',
@@ -40,6 +42,7 @@ class DiscountCode extends Model
                 'usage_limit',
                 'usage_count',
                 'user_id',
+                'is_user_restricted',
                 'starts_at',
                 'expires_at',
                 'is_active',
@@ -51,6 +54,11 @@ class DiscountCode extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function users(): BelongsToMany
+    {
+        return $this->belongsToMany(User::class);
     }
 
     public function usages(): HasMany
@@ -75,6 +83,7 @@ class DiscountCode extends Model
             'usage_limit' => 'integer',
             'usage_count' => 'integer',
             'user_id' => 'integer',
+            'is_user_restricted' => 'boolean',
             'starts_at' => 'datetime',
             'expires_at' => 'datetime',
             'is_active' => 'boolean',

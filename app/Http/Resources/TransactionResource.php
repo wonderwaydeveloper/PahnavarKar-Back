@@ -14,7 +14,13 @@ class TransactionResource extends JsonResource
             'type' => $this->type,
             'status' => $this->status,
             'amount' => $this->amount,
+            'balance_after' => $this->balance_after,
             'currency' => $this->currency,
+            'gateway' => $this->gateway,
+            'tracking_reference' => in_array($this->type, ['deposit', 'subscription'], true)
+                && $this->status === 'succeeded'
+                    ? $this->reference_id
+                    : null,
             'description' => $this->description,
             'created_at' => $this->created_at->toISOString(),
         ];

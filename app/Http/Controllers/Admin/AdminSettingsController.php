@@ -4,10 +4,12 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Services\Admin\AdminRuntimeSettings;
+use App\Services\Admin\SmsProviderSettings;
 use App\Services\Payments\PaymentGatewayManager;
 use App\Services\Payments\PaymentGatewaySettingsService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -22,6 +24,7 @@ class AdminSettingsController extends Controller
             'plans' => 'manage plans',
             'wallet' => 'manage wallet',
             'gateways' => 'manage payment gateways',
+            'sms' => 'manage sms providers',
             'site-content' => 'manage site content',
         ] as $section => $permission) {
             if ($admin->can($permission)) {
@@ -38,12 +41,14 @@ class AdminSettingsController extends Controller
         AdminRuntimeSettings $runtimeSettings,
         PaymentGatewayManager $gateways,
         PaymentGatewaySettingsService $gatewaySettings,
+        SmsProviderSettings $smsProviders,
     ): Response {
         $admin = $request->user();
         $sectionPermissions = [
             'plans' => 'manage plans',
             'wallet' => 'manage wallet',
             'gateways' => 'manage payment gateways',
+            'sms' => 'manage sms providers',
             'site-content' => 'manage site content',
         ];
         abort_unless(array_key_exists($section, $sectionPermissions), 404);
@@ -53,6 +58,7 @@ class AdminSettingsController extends Controller
             'plans' => $section === 'plans',
             'wallet' => $section === 'wallet',
             'gateways' => $section === 'gateways',
+            'smsProviders' => $section === 'sms',
             'siteContent' => $section === 'site-content',
         ];
 
@@ -70,6 +76,7 @@ class AdminSettingsController extends Controller
             'gateways' => $permissions['gateways']
                 ? $gatewaySettings->current($gateways)
                 : null,
+            'smsProviders' => $permissions['smsProviders'] ? $smsProviders->current() : null,
             'siteContent' => $permissions['siteContent'] ? $runtimeSettings->siteContent() : null,
         ]);
     }
@@ -132,7 +139,16 @@ class AdminSettingsController extends Controller
             'enabled' => ['required', 'boolean'],
             'max_per_request' => ['required', 'integer', 'min:1', 'max:'.PHP_INT_MAX],
             'max_per_day' => ['required', 'integer', 'min:1', 'max:'.PHP_INT_MAX],
+            'processing_mode' => ['required', 'string', Rule::in(['manual', 'automatic'])],
         ]);
+        if (
+            $validated['processing_mode'] === 'automatic'
+            && ! $runtimeSettings->walletWithdrawals()['automatic_mode_available']
+        ) {
+            throw ValidationException::withMessages([
+                'processing_mode' => 'پرداخت خودکار تا زمان اتصال و تأیید سرویس پرداخت بانکی در دسترس نیست.',
+            ]);
+        }
         if ($validated['max_per_day'] < $validated['max_per_request']) {
             throw ValidationException::withMessages([
                 'max_per_day' => 'سقف روزانه باید حداقل به‌اندازهٔ سقف هر درخواست باشد.',
@@ -143,6 +159,7 @@ class AdminSettingsController extends Controller
             'enabled' => (bool) $validated['enabled'],
             'max_per_request' => (int) $validated['max_per_request'],
             'max_per_day' => (int) $validated['max_per_day'],
+            'processing_mode' => $validated['processing_mode'],
         ], $request->user());
 
         return to_route('admin.settings.section', ['section' => 'wallet'])->with('status', 'تنظیمات کیف پول ذخیره شد.');
@@ -157,6 +174,27 @@ class AdminSettingsController extends Controller
         $gatewaySettings->update($request, $gateways);
 
         return to_route('admin.settings.section', ['section' => 'gateways'])->with('status', 'تنظیمات درگاه پرداخت ذخیره شد.');
+    }
+
+    public function updateSmsProvider(Request $request, SmsProviderSettings $smsProviders): RedirectResponse
+    {
+        abort_unless($request->user()->can('manage sms providers'), 403);
+        $smsProviders->update($request);
+
+        return to_route('admin.settings.section', ['section' => 'sms'])->with('status', 'سرویس پیامک فعال تغییر کرد.');
+    }
+
+    public function sendSmsTest(Request $request, SmsProviderSettings $smsProviders): RedirectResponse
+    {
+        abort_unless($request->user()->can('manage sms providers'), 403);
+        $provider = $smsProviders->sendTestMessage($request);
+
+        return to_route('admin.settings.section', ['section' => 'sms'])->with(
+            'status',
+            $provider === 'local_log'
+                ? 'آزمون فقط در log محلی ثبت شد و پیامکی ارسال نشد.'
+                : 'provider پیام آزمایشی را پذیرفت؛ برای تأیید تحویل، گوشی مقصد را بررسی کنید.',
+        );
     }
 
     public function updateSiteContent(Request $request, AdminRuntimeSettings $runtimeSettings): RedirectResponse

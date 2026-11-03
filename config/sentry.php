@@ -1,9 +1,6 @@
 <?php
 
-use App\Exceptions\SentryReportingPolicy;
-use App\Listeners\ReportFailedQueueJob;
-use Sentry\Event;
-use Sentry\EventHint;
+use App\Services\Monitoring\SentryEventFilter;
 
 /**
  * Sentry Laravel SDK configuration file.
@@ -58,19 +55,7 @@ return [
     // @see: https://docs.sentry.io/platforms/php/guides/laravel/configuration/options/#send_default_pii
     'send_default_pii' => env('SENTRY_SEND_DEFAULT_PII', false),
 
-    'before_send' => static function (Event $event, EventHint $hint): ?Event {
-        $exception = $hint->exception;
-
-        if (ReportFailedQueueJob::isProcessingJob()) {
-            if (($event->getTags()['queue_failure'] ?? null) !== 'terminal') {
-                return null;
-            }
-
-            $event = ReportFailedQueueJob::redactQueueEvent($event);
-        }
-
-        return $exception !== null && SentryReportingPolicy::shouldSend($exception) ? $event : null;
-    },
+    'before_send' => [SentryEventFilter::class, 'filter'],
 
     // Configures which data is collected automatically, `null` keeps collecting data based on `send_default_pii`
     'data_collection' => null,

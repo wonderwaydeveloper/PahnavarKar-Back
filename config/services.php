@@ -41,9 +41,17 @@ return [
         'url' => env('MELIPAYAMAK_API_URL'),
         'otp_body_id' => env('MELIPAYAMAK_OTP_BODY_ID'),
         'inactivity_warning_body_id' => env('MELIPAYAMAK_INACTIVITY_WARNING_BODY_ID'),
+        'test_body_id' => env('MELIPAYAMAK_TEST_BODY_ID'),
+    ],
+
+    'kavenegar' => [
+        'enabled' => env('KAVENEGAR_ENABLED', false),
+        'api_key' => env('KAVENEGAR_API_KEY'),
+        'sender' => env('KAVENEGAR_SENDER'),
     ],
 
     'sms' => [
+        'provider' => env('SMS_PROVIDER', 'melipayamak'),
         'queue_enabled' => env('SMS_OTP_QUEUE_ENABLED', false),
         'queue' => env('SMS_OTP_QUEUE', 'sms'),
     ],

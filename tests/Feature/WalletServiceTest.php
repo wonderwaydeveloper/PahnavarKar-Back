@@ -26,6 +26,7 @@ class WalletServiceTest extends TestCase
         $this->assertSame($credit->getKey(), $replayedCredit->getKey());
         $this->assertSame(1250, $user->fresh()->wallet_balance);
         $this->assertSame(1250, $credit->balance_after);
+        $this->assertSame('افزایش موجودی کیف پول پس از تأیید پرداخت درگاه.', $credit->description);
         $this->assertDatabaseCount('transactions', 1);
     }
 
@@ -56,6 +57,7 @@ class WalletServiceTest extends TestCase
         $this->assertSame($debit->getKey(), $replayedDebit->getKey());
         $this->assertSame(600, $user->fresh()->wallet_balance);
         $this->assertSame(600, $debit->balance_after);
+        $this->assertSame('مبلغ از موجودی کیف پول برای خرید کسر شد.', $debit->description);
         $this->assertDatabaseCount('transactions', 1);
 
         try {
@@ -94,6 +96,10 @@ class WalletServiceTest extends TestCase
         $this->assertSame('refunded', $debit->fresh()->status);
         $this->assertSame($debit->getKey(), $refund->reverses_transaction_id);
         $this->assertSame(1000, $refund->balance_after);
+        $this->assertSame(
+            'به‌دلیل ناموفق‌شدن خرید، مبلغ کسرشده به کیف پول بازگردانده شد.',
+            $refund->description,
+        );
         $this->assertDatabaseCount('transactions', 2);
     }
 
@@ -118,6 +124,10 @@ class WalletServiceTest extends TestCase
         $this->assertSame(1000, $user->fresh()->wallet_balance);
         $this->assertSame('released', $hold->fresh()->status);
         $this->assertSame($hold->getKey(), $release->reverses_transaction_id);
+        $this->assertSame(
+            'به‌دلیل رد درخواست برداشت، مبلغ رزروشده به موجودی کیف پول بازگردانده شد.',
+            $release->description,
+        );
         $this->assertDatabaseCount('transactions', 2);
     }
 
@@ -128,6 +138,7 @@ class WalletServiceTest extends TestCase
             'user_id' => $user->getKey(),
             'order_reference' => (string) Str::uuid(),
             'kind' => 'subscription',
+            'plan_key' => 'gold_1_month',
             'gross_amount' => 700,
             'wallet_amount' => 0,
             'gateway_amount' => 700,
@@ -144,6 +155,10 @@ class WalletServiceTest extends TestCase
         $this->assertSame(900, $user->fresh()->wallet_balance);
         $this->assertSame(700, $purchase->amount);
         $this->assertSame(900, $purchase->balance_after);
+        $this->assertSame(
+            'پرداخت اشتراک طلایی یک‌ماهه از طریق درگاه؛ سفارش '.$order->order_reference,
+            $purchase->description,
+        );
         $this->assertDatabaseCount('transactions', 1);
     }
 

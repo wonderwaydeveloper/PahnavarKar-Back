@@ -32,14 +32,18 @@ class SendExpoPushNotification implements ShouldBeEncrypted, ShouldQueue
         public readonly string $title,
         public readonly string $body,
         public readonly array $data = [],
+        public readonly ?string $pushTokenSnapshot = null,
     ) {
         $this->afterCommit();
     }
 
     public function handle(): void
     {
-        $subscription = PushSubscription::query()->find($this->subscriptionId);
-        if ($subscription === null) {
+        $subscription = $this->pushTokenSnapshot === null
+            ? PushSubscription::query()->find($this->subscriptionId)
+            : null;
+        $pushToken = $this->pushTokenSnapshot ?? $subscription?->push_token;
+        if ($pushToken === null) {
             return;
         }
 
@@ -51,7 +55,7 @@ class SendExpoPushNotification implements ShouldBeEncrypted, ShouldQueue
 
         try {
             $response = $request->post('https://exp.host/--/api/v2/push/send', [
-                'to' => $subscription->push_token,
+                'to' => $pushToken,
                 'title' => $this->title,
                 'body' => $this->body,
                 'data' => $this->data,
@@ -77,13 +81,13 @@ class SendExpoPushNotification implements ShouldBeEncrypted, ShouldQueue
 
         $error = $ticket['details']['error'] ?? null;
         if ($error === 'DeviceNotRegistered') {
-            $subscription->delete();
+            $subscription?->delete();
 
             return;
         }
 
         Log::warning('Expo push notification was rejected.', [
-            'subscription_id' => $subscription->id,
+            'subscription_id' => $subscription?->id ?? $this->subscriptionId,
             'error' => is_string($error) ? $error : 'UnknownError',
         ]);
 

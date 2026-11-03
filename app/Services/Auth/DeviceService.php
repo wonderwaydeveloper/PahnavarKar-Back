@@ -22,6 +22,7 @@ class DeviceService
         ?string $deviceModel,
         ?string $pushToken,
         ?string $platform,
+        bool $isNewAccount = false,
     ): array {
         $session = DB::transaction(function () use ($user, $deviceId, $deviceName, $deviceModel, $pushToken, $platform): array {
             $lockedUser = User::query()->lockForUpdate()->findOrFail($user->id);
@@ -80,7 +81,7 @@ class DeviceService
             ];
         });
 
-        if ($session['new_device']) {
+        if ($session['new_device'] && ! $isNewAccount) {
             $this->pushNotifications->sendNewDeviceAlert($session['user'], $session['device']->id);
         }
 

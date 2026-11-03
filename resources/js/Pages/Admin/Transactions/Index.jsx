@@ -3,9 +3,10 @@ import { useState } from 'react';
 import AdminMobileNavigation from '../../../Components/AdminMobileNavigation';
 import AdminSidebar from '../../../Components/AdminSidebar';
 import ThemeSwitcher from '../../../Components/ThemeSwitcher';
+import PersianDateTimeInput from '../../../Components/PersianDateTimeInput';
+import { formatPersianDateTime } from '../../../Utils/persian-date';
 
 const numberFormat = new Intl.NumberFormat('fa-IR');
-const dateFormat = new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeStyle: 'short' });
 const typeLabels = {
     deposit: 'افزایش موجودی',
     debit: 'برداشت از کیف پول',
@@ -86,11 +87,11 @@ export default function Index({ admin, transactions, filters }) {
                             </select>
                         </label>
                         <label className="text-xs font-semibold text-slate-600">از تاریخ
-                            <input type="date" value={form.from} onChange={e => setForm({ ...form, from: e.target.value })} className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-normal outline-none focus:border-indigo-400" />
+                            <PersianDateTimeInput value={form.from} onChange={(from) => setForm({ ...form, from })} />
                         </label>
                         <div className="flex items-end gap-2">
                             <label className="min-w-0 flex-1 text-xs font-semibold text-slate-600">تا تاریخ
-                                <input type="date" value={form.to} onChange={e => setForm({ ...form, to: e.target.value })} className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-normal outline-none focus:border-indigo-400" />
+                                <PersianDateTimeInput value={form.to} onChange={(to) => setForm({ ...form, to })} />
                             </label>
                             <button type="submit" className="h-11 shrink-0 rounded-xl bg-indigo-600 px-4 text-xs font-semibold text-white hover:bg-indigo-700">اعمال</button>
                         </div>
@@ -109,7 +110,7 @@ export default function Index({ admin, transactions, filters }) {
                                                 <td className="whitespace-nowrap font-bold tabular-nums text-slate-900">{numberFormat.format(item.amount)} {item.currency === 'TOMAN' ? 'تومان' : item.currency}</td>
                                                 <td><span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${item.status === 'succeeded' ? 'bg-emerald-50 text-emerald-700' : item.status === 'failed' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'}`}>{statusLabels[item.status] || item.status}</span></td>
                                                 <td><div>{item.gateway || 'کیف پول'}</div><div dir="ltr" className="mt-1 max-w-48 truncate text-slate-500" title={item.reference || ''}>{item.reference || '—'}</div></td>
-                                                <td className="whitespace-nowrap text-slate-500">{item.createdAt ? dateFormat.format(new Date(item.createdAt)) : '—'}</td>
+                                                <td className="whitespace-nowrap text-slate-500">{item.createdAt ? formatPersianDateTime(item.createdAt) : '—'}</td>
                                             </tr>
                                         ))}
                                     </tbody>

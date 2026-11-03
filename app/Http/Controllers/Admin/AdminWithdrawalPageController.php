@@ -45,7 +45,11 @@ class AdminWithdrawalPageController extends Controller
                     ] : null,
                     'amount' => $withdrawal->amount,
                     'currency' => $withdrawal->currency,
+                    'bankAccountIban' => $withdrawal->bank_account_iban,
+                    'bankAccountCardNumber' => $withdrawal->bank_account_card_number,
+                    'payoutMethod' => $withdrawal->payout_method ?? 'iban',
                     'status' => $withdrawal->status,
+                    'payoutMode' => $withdrawal->payout_mode ?? 'manual',
                     'note' => $withdrawal->review_note,
                     'createdAt' => $withdrawal->created_at?->toIso8601String(),
                     'reviewedAt' => $withdrawal->reviewed_at?->toIso8601String(),
@@ -85,5 +89,28 @@ class AdminWithdrawalPageController extends Controller
         return back()->with('status', $data['decision'] === 'approve'
             ? 'درخواست برداشت تأیید شد؛ پرداخت نهایی باید جداگانه انجام شود.'
             : 'درخواست برداشت رد و مبلغ رزروشده به کیف پول کاربر بازگردانده شد.');
+    }
+
+    public function markPaid(
+        Request $request,
+        WithdrawalRequest $withdrawal,
+        WithdrawalRequestService $withdrawalService,
+    ): RedirectResponse {
+        abort_unless($request->user()->can('manage wallet'), 403);
+        $data = $request->validate([
+            'payout_reference' => ['required', 'string', 'max:128'],
+        ]);
+
+        try {
+            $withdrawalService->markPaid(
+                (int) $withdrawal->getKey(),
+                $request->user(),
+                trim($data['payout_reference']),
+            );
+        } catch (WithdrawalRequestConflictException $exception) {
+            throw ValidationException::withMessages(['payout_reference' => $exception->getMessage()]);
+        }
+
+        return back()->with('status', 'پرداخت برداشت ثبت شد.');
     }
 }

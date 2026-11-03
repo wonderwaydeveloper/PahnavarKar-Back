@@ -26,6 +26,7 @@ class AdminDiscountCodePageController extends Controller
 
         $discounts = DiscountCode::query()
             ->with('user:id,name,phone')
+            ->with('users:id,name,phone')
             ->withCount(['usages' => fn ($query) => $query->whereIn('status', ['reserved', 'consumed'])])
             ->when(filled($filters['search'] ?? null), fn ($query) => $query->where(
                 'code',
@@ -53,11 +54,17 @@ class AdminDiscountCodePageController extends Controller
                     'maxDiscount' => $discount->max_discount,
                     'usageLimit' => $discount->usage_limit,
                     'usageCount' => $discount->usages_count,
+                    'isUserRestricted' => $discount->is_user_restricted,
                     'user' => $discount->user ? [
                         'id' => $discount->user->id,
                         'name' => $discount->user->name,
                         'phone' => $discount->user->phone,
                     ] : null,
+                    'users' => $discount->users->map(fn ($user): array => [
+                        'id' => $user->id,
+                        'name' => $user->name,
+                        'phone' => $user->phone,
+                    ])->values(),
                     'startsAt' => $discount->starts_at?->format('Y-m-d\TH:i'),
                     'expiresAt' => $discount->expires_at?->format('Y-m-d\TH:i'),
                     'isActive' => $discount->is_active,

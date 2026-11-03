@@ -1,0 +1,206 @@
+name: Deploy staging
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pahnavarkar-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Test, build, and deploy staging
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 45
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: pcov
+          extensions: bcmath, curl, dom, fileinfo, mbstring, pdo_mysql, pdo_sqlite, sqlite3, xml, zip
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install PHP dependencies and run tests
+        run: |
+          composer install --no-interaction --prefer-dist
+          vendor/bin/phpunit --coverage-clover=coverage.xml
+
+      - name: Build frontend assets
+        run: |
+          npm ci
+          npm run build
+
+      - name: Prepare production dependencies
+        run: composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Package release without runtime data or environment files
+        run: |
+          tar -czf "$RUNNER_TEMP/release.tar.gz" \
+            --exclude=.git \
+            --exclude=.env \
+            --exclude='.env.*' \
+            --exclude=node_modules \
+            --exclude=storage \
+            --exclude=public/storage \
+            --exclude=tests \
+            --exclude=coverage.xml \
+            -C "$GITHUB_WORKSPACE" .
+
+      - name: Install Ansible
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ansible"
+          "$RUNNER_TEMP/ansible/bin/python" -m pip install --requirement deploy/ansible/requirements.txt
+          echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Ansible playbook syntax
+        run: |
+          ansible-playbook \
+            --syntax-check \
+            --inventory 'staging,' \
+            --extra-vars '{"app_root":"/var/www/pahnavarkar","deploy_user":"deploy","release_id":"0000000001-001-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_path":"/tmp/release.tar.gz","environment_file_path":"/tmp/staging.env","healthcheck_url":"https://staging.example.test/up"}' \
+            deploy/ansible/deploy-staging.yml
+
+      - name: Validate staging configuration and prepare credentials
+        env:
+          STAGING_HOST: ${{ vars.STAGING_HOST }}
+          STAGING_USER: ${{ vars.STAGING_USER }}
+          STAGING_APP_ROOT: ${{ vars.STAGING_APP_ROOT }}
+          STAGING_HEALTHCHECK_URL: ${{ vars.STAGING_HEALTHCHECK_URL }}
+          STAGING_ENV_FILE: ${{ secrets.STAGING_ENV_FILE }}
+          STAGING_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          STAGING_SSH_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path, PurePosixPath
+          from urllib.parse import urlsplit
+
+          required = (
+              "STAGING_HOST",
+              "STAGING_USER",
+              "STAGING_APP_ROOT",
+              "STAGING_HEALTHCHECK_URL",
+              "STAGING_ENV_FILE",
+              "STAGING_SSH_PRIVATE_KEY",
+              "STAGING_SSH_KNOWN_HOSTS",
+          )
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit("Missing staging configuration: " + ", ".join(missing))
+
+          host = os.environ["STAGING_HOST"]
+          user = os.environ["STAGING_USER"]
+          app_root = PurePosixPath(os.environ["STAGING_APP_ROOT"])
+          healthcheck_url = os.environ["STAGING_HEALTHCHECK_URL"]
+          if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+              raise SystemExit("STAGING_HOST must be an IPv4 address or DNS name.")
+          if not re.fullmatch(r"[a-z_][a-z0-9_-]*", user):
+              raise SystemExit("STAGING_USER is not a valid Linux account name.")
+          if (
+              not str(app_root).startswith("/var/www/")
+              or len(app_root.parts) < 4
+              or ".." in app_root.parts
+          ):
+              raise SystemExit("STAGING_APP_ROOT must be a safe path below /var/www/.")
+
+          healthcheck = urlsplit(healthcheck_url)
+          if healthcheck.scheme != "https" or not healthcheck.hostname or healthcheck.path.rstrip("/") != "/up":
+              raise SystemExit("STAGING_HEALTHCHECK_URL must be an HTTPS URL ending in /up.")
+
+          env_values = {}
+          for line in os.environ["STAGING_ENV_FILE"].splitlines():
+              line = line.strip()
+              if not line or line.startswith("#") or "=" not in line:
+                  continue
+              key, value = line.split("=", 1)
+              env_values[key.strip()] = value.strip().strip("\"'")
+
+          required_env = (
+              "APP_KEY",
+              "APP_URL",
+              "DB_HOST",
+              "DB_DATABASE",
+              "DB_USERNAME",
+              "DB_PASSWORD",
+          )
+          missing_env = [key for key in required_env if not env_values.get(key)]
+          if env_values.get("APP_ENV") != "staging":
+              missing_env.append("APP_ENV=staging")
+          if env_values.get("APP_DEBUG", "").lower() != "false":
+              missing_env.append("APP_DEBUG=false")
+          if env_values.get("DB_CONNECTION") != "mysql":
+              missing_env.append("DB_CONNECTION=mysql")
+          app_url = urlsplit(env_values.get("APP_URL", ""))
+          if app_url.scheme != "https" or not app_url.hostname:
+              missing_env.append("APP_URL (HTTPS)")
+          if missing_env:
+              raise SystemExit("STAGING_ENV_FILE is missing valid settings: " + ", ".join(missing_env))
+
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          env_file = runner_temp / "staging.env"
+          env_file.write_text(os.environ["STAGING_ENV_FILE"], encoding="utf-8")
+          env_file.chmod(0o600)
+
+          private_key = runner_temp / "staging-key"
+          private_key.write_text(os.environ["STAGING_SSH_PRIVATE_KEY"], encoding="utf-8")
+          private_key.chmod(0o600)
+
+          known_hosts = runner_temp / "known_hosts"
+          known_hosts.write_text(os.environ["STAGING_SSH_KNOWN_HOSTS"].rstrip() + "\n", encoding="utf-8")
+          known_hosts.chmod(0o600)
+
+          release_id = f"{int(os.environ['GITHUB_RUN_NUMBER']):010d}-{int(os.environ['GITHUB_RUN_ATTEMPT']):03d}-{os.environ['GITHUB_SHA']}"
+          variables = {
+              "app_root": str(app_root),
+              "deploy_user": user,
+              "release_id": release_id,
+              "artifact_path": str(runner_temp / "release.tar.gz"),
+              "environment_file_path": str(env_file),
+              "healthcheck_url": healthcheck_url,
+              "ansible_python_interpreter": "/usr/bin/python3",
+              "ansible_ssh_common_args": (
+                  f"-o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "
+                  f"-o UserKnownHostsFile={known_hosts}"
+              ),
+          }
+          (runner_temp / "deploy-vars.json").write_text(json.dumps(variables), encoding="utf-8")
+          PY
+
+      - name: Deploy with Ansible
+        env:
+          STAGING_HOST: ${{ vars.STAGING_HOST }}
+          STAGING_USER: ${{ vars.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          ansible-playbook \
+            --inventory "${STAGING_HOST}," \
+            --user "$STAGING_USER" \
+            --private-key "$RUNNER_TEMP/staging-key" \
+            --extra-vars "@$RUNNER_TEMP/deploy-vars.json" \
+            deploy/ansible/deploy-staging.yml
+
+      - name: Remove temporary deployment credentials
+        if: always()
+        run: |
+          rm -f -- \
+            "$RUNNER_TEMP/staging.env" \
+            "$RUNNER_TEMP/staging-key" \
+            "$RUNNER_TEMP/known_hosts" \
+            "$RUNNER_TEMP/deploy-vars.json" \
+            "$RUNNER_TEMP/release.tar.gz"

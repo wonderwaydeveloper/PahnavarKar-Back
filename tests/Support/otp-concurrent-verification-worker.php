@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\Auth\AuthService;
+use App\Services\Auth\OtpService;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -8,6 +9,7 @@ use Illuminate\Validation\ValidationException;
 require dirname(__DIR__, 2).'/vendor/autoload.php';
 
 $worker = $argv[1] ?? '';
+$mode = $argv[2] ?? 'verify';
 $directory = (string) getenv('OTP_CONCURRENCY_DIR');
 $phone = (string) getenv('OTP_CONCURRENCY_PHONE');
 $deviceId = (string) getenv('OTP_CONCURRENCY_DEVICE_ID');
@@ -22,7 +24,7 @@ config([
     'database.connections.mysql.database' => (string) getenv('DB_DATABASE'),
     'database.connections.mysql.username' => (string) getenv('DB_USERNAME'),
     'database.connections.mysql.password' => (string) getenv('DB_PASSWORD'),
-    'cache.default' => 'array',
+    'cache.default' => $mode === 'record-failure' ? 'database' : 'array',
 ]);
 DB::purge('mysql');
 DB::setDefaultConnection('mysql');
@@ -40,18 +42,23 @@ if (! is_file($directory.DIRECTORY_SEPARATOR.'release')) {
 }
 
 try {
-    $app->make(AuthService::class)->verify(
-        $phone,
-        'login',
-        '123456',
-        $deviceId,
-        null,
-        null,
-        null,
-        'unknown',
-        null,
-    );
-    $result = ['status' => 'authenticated'];
+    if ($mode === 'record-failure') {
+        $app->make(OtpService::class)->recordFailedVerification($phone, 'login');
+        $result = ['status' => 'recorded'];
+    } else {
+        $app->make(AuthService::class)->verify(
+            $phone,
+            'login',
+            '123456',
+            $deviceId,
+            null,
+            null,
+            null,
+            'unknown',
+            null,
+        );
+        $result = ['status' => 'authenticated'];
+    }
 } catch (ValidationException) {
     $result = ['status' => 'rejected'];
 } catch (Throwable $exception) {

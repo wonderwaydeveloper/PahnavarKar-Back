@@ -21,6 +21,19 @@ class SubscriptionRuntimeSettingsTest extends TestCase
         $this->withoutMiddleware(ThrottleRequests::class);
     }
 
+    public function test_public_homepage_renders_tool_titles_and_descriptions_from_plan_catalog(): void
+    {
+        config([
+            'plans.features.base-salary.label' => 'عنوان ابزار مرجع',
+            'plans.features.base-salary.description' => 'توضیح ابزار مرجع واحد',
+        ]);
+
+        $this->get('/')
+            ->assertOk()
+            ->assertSee('عنوان ابزار مرجع')
+            ->assertSee('توضیح ابزار مرجع واحد');
+    }
+
     public function test_public_catalog_and_current_subscription_use_runtime_prices_and_features(): void
     {
         $user = User::factory()->create(['is_active' => true]);
@@ -55,7 +68,11 @@ class SubscriptionRuntimeSettingsTest extends TestCase
                 'duration_days' => 30,
                 'price' => 0,
                 'is_available' => false,
-            ]);
+            ])
+            ->assertJsonPath(
+                'feature_catalog.base-salary.description',
+                'محاسبه حقوق پایه و نمایش جزئیات آن',
+            );
 
         $this->actingAs($user, 'sanctum')
             ->getJson('/api/v1/auth/subscription')
@@ -170,6 +187,8 @@ class SubscriptionRuntimeSettingsTest extends TestCase
                 'expected_quote' => [
                     'gross_amount' => 0,
                     'payable_amount' => 0,
+                    'wallet_amount' => 0,
+                    'gateway_amount' => 0,
                     'credit_amount' => 0,
                     'discount_amount' => 0,
                     'duration_days' => 30,
@@ -226,6 +245,8 @@ class SubscriptionRuntimeSettingsTest extends TestCase
             'credit_amount',
             'discount_amount',
             'payable_amount',
+            'wallet_amount',
+            'gateway_amount',
             'duration_days',
             'change_type',
             'source_subscription_id',

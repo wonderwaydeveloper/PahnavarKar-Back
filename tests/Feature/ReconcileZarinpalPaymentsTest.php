@@ -167,6 +167,115 @@ class ReconcileZarinpalPaymentsTest extends TestCase
         Http::assertSentCount(4);
     }
 
+    public function test_reconciliation_uses_the_attempt_merchant_snapshot_after_credential_rotation(): void
+    {
+        $merchantIdAtInitiation = config('payment.gateways.zarinpal.merchant_ids.sandbox');
+        $rotatedMerchantId = (string) Str::uuid();
+        $user = User::factory()->create(['wallet_balance' => 100]);
+        $attempt = $this->createAttempt($user, 'AUTH-OLD-MERCHANT');
+        config(['payment.gateways.zarinpal.merchant_ids.sandbox' => $rotatedMerchantId]);
+        $this->mock(ExpoPushService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('sendToUser')->once();
+        });
+        Http::fake([
+            'https://sandbox.example/api/payment/unVerified.json' => Http::response([
+                'data' => [
+                    'code' => 100,
+                    'authorities' => [['authority' => 'AUTH-OLD-MERCHANT']],
+                ],
+            ]),
+            'https://sandbox.example/api/payment/inquiry.json' => Http::response([
+                'data' => ['code' => 100, 'status' => 'PAID'],
+            ]),
+            'https://sandbox.example/api/payment/verify.json' => Http::response([
+                'data' => ['code' => 100, 'ref_id' => 654321],
+            ]),
+        ]);
+
+        $this->artisan('payments:reconcile-zarinpal')
+            ->expectsOutput('Matched 0 local attempt(s); verified 1 payment(s).')
+            ->assertExitCode(0);
+
+        $this->assertSame('succeeded', $attempt->fresh()->status);
+        $this->assertSame($merchantIdAtInitiation, $attempt->fresh()->gateway_merchant_id);
+        $this->assertSame(2100, $user->fresh()->wallet_balance);
+        Http::assertSent(static fn (ClientRequest $request): bool => $request->url() === 'https://sandbox.example/api/payment/unVerified.json'
+            && $request->data() === ['merchant_id' => $rotatedMerchantId]);
+        Http::assertSent(static fn (ClientRequest $request): bool => $request->url() === 'https://sandbox.example/api/payment/inquiry.json'
+            && $request->data() === [
+                'merchant_id' => $merchantIdAtInitiation,
+                'authority' => 'AUTH-OLD-MERCHANT',
+            ]);
+        Http::assertSent(static fn (ClientRequest $request): bool => $request->url() === 'https://sandbox.example/api/payment/verify.json'
+            && $request->data() === [
+                'merchant_id' => $merchantIdAtInitiation,
+                'amount' => 2000,
+                'authority' => 'AUTH-OLD-MERCHANT',
+            ]);
+        Http::assertSentCount(3);
+    }
+
+    public function test_reconciliation_uses_saved_attempt_credentials_when_current_merchant_is_unconfigured(): void
+    {
+        $merchantIdAtInitiation = config('payment.gateways.zarinpal.merchant_ids.sandbox');
+        $user = User::factory()->create(['wallet_balance' => 100]);
+        $attempt = $this->createAttempt($user, 'AUTH-SAVED-MERCHANT');
+        config(['payment.gateways.zarinpal.merchant_ids.sandbox' => null]);
+        $this->mock(ExpoPushService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('sendToUser')->once();
+        });
+        Http::fake([
+            'https://sandbox.example/api/payment/inquiry.json' => Http::response([
+                'data' => ['code' => 100, 'status' => 'PAID'],
+            ]),
+            'https://sandbox.example/api/payment/verify.json' => Http::response([
+                'data' => ['code' => 100, 'ref_id' => 654322],
+            ]),
+        ]);
+
+        $this->artisan('payments:reconcile-zarinpal')
+            ->expectsOutput('Could not load Zarinpal sandbox merchant configuration; saved attempts will still be reconciled individually.')
+            ->expectsOutput('Matched 0 local attempt(s); verified 1 payment(s).')
+            ->assertExitCode(0);
+
+        $this->assertSame('succeeded', $attempt->fresh()->status);
+        $this->assertSame($merchantIdAtInitiation, $attempt->fresh()->gateway_merchant_id);
+        Http::assertSent(static fn (ClientRequest $request): bool => $request->url() === 'https://sandbox.example/api/payment/inquiry.json'
+            && $request->data() === [
+                'merchant_id' => $merchantIdAtInitiation,
+                'authority' => 'AUTH-SAVED-MERCHANT',
+            ]);
+        Http::assertNotSent(static fn (ClientRequest $request): bool => str_ends_with($request->url(), '/unVerified.json'));
+        Http::assertSentCount(2);
+    }
+
+    public function test_reconciliation_does_not_verify_an_attempt_without_merchant_snapshot(): void
+    {
+        $user = User::factory()->create(['wallet_balance' => 100]);
+        $attempt = $this->createAttempt($user, 'AUTH-MISSING-MERCHANT');
+        $attempt->forceFill(['gateway_merchant_id' => null])->saveOrFail();
+        Http::fake([
+            'https://sandbox.example/api/payment/unVerified.json' => Http::response([
+                'data' => [
+                    'code' => 100,
+                    'authorities' => [['authority' => 'AUTH-MISSING-MERCHANT']],
+                ],
+            ]),
+        ]);
+
+        $this->artisan('payments:reconcile-zarinpal')
+            ->expectsOutput('1 Zarinpal attempt(s) have no merchant ID snapshot and require manual reconciliation.')
+            ->expectsOutput('Matched 0 local attempt(s); verified 0 payment(s).')
+            ->assertExitCode(1);
+
+        $this->assertSame('pending', $attempt->fresh()->status);
+        $this->assertSame(100, $user->fresh()->wallet_balance);
+        $this->assertSame(0, Transaction::query()->count());
+        Http::assertSentCount(1);
+        Http::assertNotSent(static fn (ClientRequest $request): bool => str_ends_with($request->url(), '/verify.json')
+            || str_ends_with($request->url(), '/inquiry.json'));
+    }
+
     public function test_authority_list_from_other_environment_cannot_match_or_verify_local_attempt(): void
     {
         $sandboxMerchantId = config('payment.gateways.zarinpal.merchant_ids.sandbox');
@@ -551,7 +660,7 @@ class ReconcileZarinpalPaymentsTest extends TestCase
             ]);
     }
 
-    public function test_failed_or_reversed_inquiry_requires_review_without_crediting_attempt(): void
+    public function test_confirmed_failed_or_reversed_inquiry_finalizes_attempt_without_crediting_wallet(): void
     {
         $user = User::factory()->create(['wallet_balance' => 300]);
         $failedAttempt = $this->createAttempt($user, 'AUTH-FAILED');
@@ -566,12 +675,12 @@ class ReconcileZarinpalPaymentsTest extends TestCase
         ]);
 
         $this->artisan('payments:reconcile-zarinpal')
-            ->expectsOutput('Attempt '.$failedAttempt->getKey().' requires review (FAILED).')
-            ->expectsOutput('Attempt '.$reversedAttempt->getKey().' requires review (REVERSED).')
-            ->assertExitCode(1);
+            ->expectsOutput('Attempt '.$failedAttempt->getKey().' was confirmed failed (FAILED).')
+            ->expectsOutput('Attempt '.$reversedAttempt->getKey().' was confirmed failed (REVERSED).')
+            ->assertExitCode(0);
 
-        $this->assertSame('pending', $failedAttempt->fresh()->status);
-        $this->assertSame('pending', $reversedAttempt->fresh()->status);
+        $this->assertSame('failed', $failedAttempt->fresh()->status);
+        $this->assertSame('failed', $reversedAttempt->fresh()->status);
         $this->assertNotNull($failedAttempt->fresh()->last_reconciled_at);
         $this->assertNotNull($reversedAttempt->fresh()->last_reconciled_at);
         $this->assertSame(300, $user->fresh()->wallet_balance);
@@ -805,6 +914,7 @@ class ReconcileZarinpalPaymentsTest extends TestCase
             'idempotency_key' => (string) Str::uuid(),
             'gateway' => 'zarinpal',
             'gateway_environment' => 'sandbox',
+            'gateway_merchant_id' => config('payment.gateways.zarinpal.merchant_ids.sandbox'),
             'amount' => 2000,
             'currency' => 'TOMAN',
             'status' => 'pending',
@@ -948,6 +1058,7 @@ class ReconcileZarinpalPaymentsTest extends TestCase
             'merchant_reference' => (string) Str::uuid(),
             'gateway' => 'zarinpal',
             'gateway_environment' => $environment,
+            'gateway_merchant_id' => config("payment.gateways.zarinpal.merchant_ids.{$environment}"),
             'amount' => 2000,
             'currency' => 'TOMAN',
             'status' => $status,

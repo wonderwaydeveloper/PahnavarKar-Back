@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
 use Spatie\Activitylog\Support\LogOptions;
 
@@ -43,6 +44,11 @@ class Transaction extends Model
     public function reversedTransaction(): BelongsTo
     {
         return $this->belongsTo(self::class, 'reverses_transaction_id');
+    }
+
+    public function refund(): HasOne
+    {
+        return $this->hasOne(self::class, 'reverses_transaction_id')->where('type', 'refund');
     }
 
     protected function casts(): array

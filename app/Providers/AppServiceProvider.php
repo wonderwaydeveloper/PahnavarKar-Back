@@ -3,15 +3,15 @@
 namespace App\Providers;
 
 use App\Models\User;
-use App\Services\Auth\LocalLogSmsProvider;
-use App\Services\Auth\MelipayamakSmsProvider;
 use App\Services\Auth\PhoneNumber;
 use App\Services\Auth\SmsProvider;
+use App\Services\Auth\SmsProviderManager;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\Str;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -20,13 +20,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        if ($this->app->environment('local') && config('services.melipayamak.local_log_enabled')) {
-            $this->app->bind(SmsProvider::class, LocalLogSmsProvider::class);
-
-            return;
-        }
-
-        $this->app->bind(SmsProvider::class, MelipayamakSmsProvider::class);
+        $this->app->singleton(SmsProviderManager::class);
+        $this->app->bind(SmsProvider::class, SmsProviderManager::class);
     }
 
     /**
@@ -34,11 +29,32 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        if (! $this->app->environment('local', 'testing')) {
+            $limiterStore = config('cache.limiter') ?? config('cache.default');
+            $limiterDriver = is_string($limiterStore)
+                ? config('cache.stores.'.$limiterStore.'.driver')
+                : null;
+
+            if (! in_array($limiterDriver, ['database', 'redis', 'memcached', 'dynamodb'], true)) {
+                throw new \LogicException(
+                    'Rate limiting requires a shared atomic cache store in non-local environments.'
+                );
+            }
+        }
+
         Gate::define('viewApiDocs', static fn (?User $user): bool => app()->environment('local') || $user?->canAccessAdminPanel() === true,
         );
 
         RateLimiter::for('otp-send', function (Request $request): array {
-            $phone = PhoneNumber::forRateLimit($request->input('phone'));
+            $phoneInput = $request->input('phone');
+            if (
+                ! is_string($phoneInput)
+                && $request->routeIs('admin.login.resend')
+                && $request->hasSession()
+            ) {
+                $phoneInput = $request->session()->get('admin_login_phone');
+            }
+            $phone = PhoneNumber::forRateLimit($phoneInput);
             $ip = (string) $request->ip();
             $deviceId = $request->header('X-Device-Id');
 
@@ -50,8 +66,8 @@ class AppServiceProvider extends ServiceProvider
                 Limit::perHour(30)->by('otp-send:ip-hour:'.$ip),
             ];
 
-            if (is_string($deviceId) && $deviceId !== '') {
-                $limits[] = Limit::perHour(10)->by('otp-send:device:'.hash('sha256', $deviceId));
+            if (is_string($deviceId) && Str::isUuid($deviceId)) {
+                $limits[] = Limit::perHour(10)->by('otp-send:device:'.hash('sha256', strtolower($deviceId)));
             }
 
             return $limits;
@@ -69,8 +85,8 @@ class AppServiceProvider extends ServiceProvider
                 Limit::perHour(60)->by('otp-verify:ip-hour:'.$ip),
             ];
 
-            if (is_string($deviceId) && $deviceId !== '') {
-                $limits[] = Limit::perHour(30)->by('otp-verify:device:'.hash('sha256', $deviceId));
+            if (is_string($deviceId) && Str::isUuid($deviceId)) {
+                $limits[] = Limit::perHour(30)->by('otp-verify:device:'.hash('sha256', strtolower($deviceId)));
             }
 
             return $limits;
@@ -97,17 +113,15 @@ class AppServiceProvider extends ServiceProvider
             return $limits;
         });
 
-        RateLimiter::for('admin-login-send', function (Request $request): array {
-            $phone = PhoneNumber::forRateLimit(
-                $request->input('phone', $request->session()->get('admin_login_phone')),
-            );
+        RateLimiter::for('otp-delete-account', function (Request $request): array {
+            $userId = (string) ($request->user()?->getAuthIdentifier() ?? 'guest');
             $ip = (string) $request->ip();
 
             return [
-                Limit::perMinute(2)->by('admin-login-send:phone-minute:'.$phone),
-                Limit::perHour(5)->by('admin-login-send:phone-hour:'.$phone),
-                Limit::perMinute(10)->by('admin-login-send:ip-minute:'.$ip),
-                Limit::perHour(30)->by('admin-login-send:ip-hour:'.$ip),
+                Limit::perMinute(5)->by('otp-delete-account:user-minute:'.$userId),
+                Limit::perHour(20)->by('otp-delete-account:user-hour:'.$userId),
+                Limit::perMinute(20)->by('otp-delete-account:ip-minute:'.$ip),
+                Limit::perHour(60)->by('otp-delete-account:ip-hour:'.$ip),
             ];
         });
 
@@ -120,6 +134,19 @@ class AppServiceProvider extends ServiceProvider
                 Limit::perHour(20)->by('admin-login-verify:phone-hour:'.$phone),
                 Limit::perMinute(20)->by('admin-login-verify:ip-minute:'.$ip),
                 Limit::perHour(60)->by('admin-login-verify:ip-hour:'.$ip),
+            ];
+        });
+
+        RateLimiter::for('admin-sms-test', function (Request $request): array {
+            $userId = (string) ($request->user()?->getAuthIdentifier() ?? 'guest');
+            $phone = $request->input('phone');
+            $phoneKey = is_string($phone) ? hash('sha256', $phone) : 'invalid';
+
+            return [
+                Limit::perMinute(1)->by('admin-sms-test:user-minute:'.$userId),
+                Limit::perHour(5)->by('admin-sms-test:user-hour:'.$userId),
+                Limit::perMinute(1)->by('admin-sms-test:phone-minute:'.$phoneKey),
+                Limit::perHour(5)->by('admin-sms-test:phone-hour:'.$phoneKey),
             ];
         });
     }

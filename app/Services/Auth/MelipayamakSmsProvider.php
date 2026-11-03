@@ -5,8 +5,19 @@ namespace App\Services\Auth;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 
-class MelipayamakSmsProvider implements SmsProvider
+class MelipayamakSmsProvider implements ConfigurableSmsProvider
 {
+    public function isConfigured(): bool
+    {
+        $url = config('services.melipayamak.url');
+
+        return config('services.melipayamak.enabled') === true
+            && is_string($url)
+            && str_starts_with($url, 'https://console.melipayamak.com/api/send/shared/')
+            && is_string(config('services.melipayamak.otp_body_id'))
+            && config('services.melipayamak.otp_body_id') !== '';
+    }
+
     public function sendOtp(string $phone, string $code): void
     {
         $this->sendTemplate($phone, config('services.melipayamak.otp_body_id'), [$code]);
@@ -24,6 +35,22 @@ class MelipayamakSmsProvider implements SmsProvider
             $bodyId,
             [$userName, (string) $graceDays],
         );
+    }
+
+    public function canSendTestMessage(): bool
+    {
+        $bodyId = config('services.melipayamak.test_body_id');
+
+        return $this->isConfigured() && is_string($bodyId) && $bodyId !== '';
+    }
+
+    public function sendTestMessage(string $phone): void
+    {
+        if (! $this->canSendTestMessage()) {
+            throw new SmsDeliveryException('Melipayamak test message template is not configured.');
+        }
+
+        $this->sendTemplate($phone, config('services.melipayamak.test_body_id'), []);
     }
 
     /**

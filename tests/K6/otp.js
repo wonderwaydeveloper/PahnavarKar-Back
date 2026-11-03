@@ -3,6 +3,8 @@ import { check } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
 
 const failures = new Rate('otp_send_failures');
+const acceptedResponses = new Rate('otp_send_accepted_responses');
+const rateLimitedResponses = new Rate('otp_send_rate_limited_responses');
 const responseTime = new Trend('otp_send_response_time');
 const baseUrl = __ENV.STAGING_BASE_URL;
 const phones = (__ENV.TEST_PHONES || '').split(',').map((phone) => phone.trim()).filter(Boolean);
@@ -45,5 +47,7 @@ export default function () {
     });
 
     failures.add(!passed);
+    acceptedResponses.add(response.status === 202);
+    rateLimitedResponses.add(response.status === 429);
     responseTime.add(response.timings.duration);
 }
