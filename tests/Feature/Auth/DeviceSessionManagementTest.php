@@ -136,6 +136,63 @@ class DeviceSessionManagementTest extends TestCase
         $this->assertFalse($second['device']->fresh()->is_active);
     }
 
+    public function test_logout_others_preserves_current_session_and_revokes_other_sessions_atomically(): void
+    {
+        $user = $this->userFor('+989121234573');
+        $current = $this->addDevice(
+            $user,
+            '73e16eb1-a2d5-4a54-a4a7-59c1c3bf1186',
+            pushToken: 'ExponentPushToken[kept-device]',
+        );
+        $other = $this->addDevice(
+            $user,
+            '73e16eb1-a2d5-4a54-a4a7-59c1c3bf1187',
+            pushToken: 'ExponentPushToken[revoked-device]',
+        );
+        $legacyToken = $user->createToken('legacy-client', ['*'], now()->addDays(30));
+
+        $this->withToken($current['token'])
+            ->postJson('/api/v1/auth/logout-others')
+            ->assertNoContent();
+
+        $this->assertDatabaseHas('personal_access_tokens', ['name' => 'device:'.$current['device']->device_id]);
+        $this->assertDatabaseMissing('personal_access_tokens', ['name' => 'device:'.$other['device']->device_id]);
+        $this->assertDatabaseMissing('personal_access_tokens', ['id' => $legacyToken->accessToken->id]);
+        $this->assertTrue($current['device']->fresh()->is_active);
+        $this->assertFalse($other['device']->fresh()->is_active);
+        $this->assertDatabaseHas('push_subscriptions', ['push_token' => 'ExponentPushToken[kept-device]']);
+        $this->assertDatabaseMissing('push_subscriptions', ['push_token' => 'ExponentPushToken[revoked-device]']);
+
+        Auth::forgetGuards();
+        $this->withToken($current['token'])->getJson('/api/v1/auth/me')->assertOk();
+        Auth::forgetGuards();
+        $this->withToken($other['token'])->getJson('/api/v1/auth/me')->assertUnauthorized();
+    }
+
+    public function test_logout_others_respects_security_capability_restrictions(): void
+    {
+        $user = $this->userFor('+989121234574');
+        $user->forceFill(['restricted_capabilities' => ['security']])->saveOrFail();
+        $current = $this->addDevice(
+            $user,
+            '73e16eb1-a2d5-4a54-a4a7-59c1c3bf1188',
+        );
+        $other = $this->addDevice(
+            $user,
+            '73e16eb1-a2d5-4a54-a4a7-59c1c3bf1189',
+        );
+
+        $this->withToken($current['token'])
+            ->postJson('/api/v1/auth/logout-others')
+            ->assertForbidden()
+            ->assertJsonPath('code', 'account_capability_restricted');
+
+        $this->assertDatabaseHas('personal_access_tokens', ['name' => 'device:'.$current['device']->device_id]);
+        $this->assertDatabaseHas('personal_access_tokens', ['name' => 'device:'.$other['device']->device_id]);
+        $this->assertTrue($current['device']->fresh()->is_active);
+        $this->assertTrue($other['device']->fresh()->is_active);
+    }
+
     public function test_phone_change_preserves_current_session_and_revokes_other_device_sessions(): void
     {
         $user = $this->userFor('+989121234571');

@@ -202,6 +202,66 @@ class DeviceService
         });
     }
 
+    public function revokeOthers(User $user): void
+    {
+        $currentToken = $user->currentAccessToken();
+        if ($currentToken === null || ! method_exists($currentToken, 'getKey')) {
+            throw ValidationException::withMessages([
+                'session' => 'نشست جاری برای حفظ هنگام خروج از سایر دستگاه‌ها قابل شناسایی نیست.',
+            ]);
+        }
+
+        $currentTokenId = $currentToken->getKey();
+        if ($currentTokenId === null) {
+            throw ValidationException::withMessages([
+                'session' => 'نشست جاری برای حفظ هنگام خروج از سایر دستگاه‌ها قابل شناسایی نیست.',
+            ]);
+        }
+
+        DB::transaction(function () use ($user, $currentTokenId): void {
+            $lockedUser = User::query()->lockForUpdate()->findOrFail($user->getKey());
+            $currentToken = $lockedUser->tokens()->whereKey($currentTokenId)->first();
+            if ($currentToken === null) {
+                throw ValidationException::withMessages([
+                    'session' => 'نشست جاری برای حفظ هنگام خروج از سایر دستگاه‌ها پیدا نشد.',
+                ]);
+            }
+
+            $currentTokenName = $currentToken->name;
+            $currentDeviceId = is_string($currentTokenName)
+                && str_starts_with($currentTokenName, 'device:')
+                && strlen($currentTokenName) > strlen('device:')
+                    ? substr($currentTokenName, strlen('device:'))
+                    : null;
+
+            $otherDevices = $lockedUser->devices();
+            if ($currentDeviceId !== null) {
+                $otherDevices->where('device_id', '!=', $currentDeviceId);
+            }
+            $otherDeviceIds = $otherDevices->pluck('id');
+
+            $lockedUser->tokens()->where('id', '!=', $currentTokenId)->delete();
+
+            $devicesToRevoke = $lockedUser->devices();
+            if ($currentDeviceId !== null) {
+                $devicesToRevoke->where('device_id', '!=', $currentDeviceId);
+            }
+            $devicesToRevoke->update(['is_active' => false]);
+
+            $pushSubscriptions = $lockedUser->pushSubscriptions();
+            if ($currentDeviceId === null) {
+                $pushSubscriptions->delete();
+            } else {
+                $pushSubscriptions->where(function ($query) use ($otherDeviceIds): void {
+                    $query->whereNull('user_device_id');
+                    if ($otherDeviceIds->isNotEmpty()) {
+                        $query->orWhereIn('user_device_id', $otherDeviceIds);
+                    }
+                })->delete();
+            }
+        });
+    }
+
     private function pruneExpiredSessions(User $user): void
     {
         $user->tokens()

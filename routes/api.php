@@ -85,6 +85,8 @@ Route::prefix('v1/auth')->group(function () {
         Route::delete('/account', [AuthController::class, 'deleteAccount'])->middleware('throttle:otp-delete-account');
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::post('/logout-all', [AuthController::class, 'logoutAll']);
+        Route::post('/logout-others', [AuthController::class, 'logoutOthers'])
+            ->middleware(EnsureAccountCapability::class.':security');
         Route::get('/devices', [AuthController::class, 'devices']);
         Route::delete('/devices/{deviceId}', [AuthController::class, 'revokeDevice'])
             ->whereNumber('deviceId')

@@ -399,6 +399,13 @@ class AuthController extends Controller
         return response()->noContent();
     }
 
+    public function logoutOthers(Request $request): Response
+    {
+        $this->deviceService->revokeOthers($request->user());
+
+        return response()->noContent();
+    }
+
     public function devices(Request $request): JsonResponse
     {
         return response()->json([
