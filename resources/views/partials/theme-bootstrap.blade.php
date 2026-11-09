@@ -10,7 +10,7 @@
         document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
         document.querySelector('meta[name="theme-color"]')?.setAttribute(
             'content',
-            isDark ? '#041E28' : '#EFF8FA',
+            isDark ? '#191C1D' : '#FBFCFD',
         );
     })();
 </script>

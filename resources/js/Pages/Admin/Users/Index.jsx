@@ -193,7 +193,7 @@ export default function Index({
                             {users.data.length === 0 ? (
                                 <div className="px-6 py-16 text-center">
                                     <div className="mx-auto grid size-12 place-items-center rounded-2xl bg-slate-100 text-slate-500" aria-hidden="true">
-                                        <svg className="size-6" viewBox="0 0 24 24" fill="none"><circle cx="10.8" cy="10.8" r="6.8" stroke="currentColor" strokeWidth="1.7"/><path d="m16 16 4 4M8 10.8h5.6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                                        <i className="fa-solid fa-magnifying-glass text-xl" aria-hidden="true"></i>
                                     </div>
                                     <p className="mt-3 text-sm font-semibold text-slate-700">کاربری با این مشخصات پیدا نشد.</p>
                                     <p className="mt-1 text-xs text-slate-500">عبارت جست‌وجو یا وضعیت انتخاب‌شده را تغییر دهید.</p>

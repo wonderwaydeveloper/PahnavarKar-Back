@@ -43,7 +43,7 @@ export default function Dashboard({
                                 rel="noopener noreferrer"
                                 className="hidden h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-100 sm:inline-flex sm:px-3.5"
                             >
-                                <svg className="size-4" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 5h5v5m0-5l-9 9m5-7v-2H6.5A1.5 1.5 0 005 6.5v11A1.5 1.5 0 006.5 19h11a1.5 1.5 0 001.5-1.5V13" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                <i className="fa-solid fa-arrow-up-right-from-square size-4" aria-hidden="true"></i>
                                 <span className="hidden sm:inline">مشاهدهٔ سایت</span>
                             </a>
                             <Link href="/admin/profile" className="flex items-center gap-3 rounded-xl focus:outline-none focus:ring-4 focus:ring-indigo-100" aria-label="ویرایش پروفایل">
@@ -77,7 +77,7 @@ export default function Dashboard({
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                                 <div className="inline-flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-500 shadow-sm">
-                                    <svg className="size-4 text-indigo-500" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2" stroke="currentColor" strokeWidth="1.7"/><path d="M8 3.5v3m8-3v3M4 9.5h16" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                                    <i className="fa-solid fa-calendar-days size-4 text-indigo-500" aria-hidden="true"></i>
                                     آخرین وضعیت سامانه
                                 </div>
                                 {canManageSettings && <Link href="/admin/settings" className="inline-flex h-10 items-center rounded-xl bg-indigo-600 px-4 text-xs font-semibold text-white transition hover:bg-indigo-700">تنظیمات سامانه</Link>}
@@ -86,7 +86,7 @@ export default function Dashboard({
 
                         {flash.status && (
                             <div className="mt-6 flex gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm leading-7 text-indigo-800" role="status">
-                                <svg className="mt-1 size-5 shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.7"/><path d="M12 11v5m0-8h.01" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                                <i className="fa-solid fa-circle-info mt-1 size-5 shrink-0" aria-hidden="true"></i>
                                 {flash.status}
                             </div>
                         )}
@@ -102,11 +102,11 @@ export default function Dashboard({
                                         </div>
                                         <span className={`grid size-11 place-items-center rounded-2xl ${['bg-indigo-50 text-indigo-600', 'bg-teal-50 text-teal-600', 'bg-amber-50 text-amber-600', 'bg-violet-50 text-violet-600', 'bg-rose-50 text-rose-600'][index % 5]}`} aria-hidden="true">
                                             {[
-                                                <svg key="users" className="size-5" viewBox="0 0 24 24" fill="none"><path d="M16 19v-1.5a3.5 3.5 0 00-3.5-3.5h-5A3.5 3.5 0 004 17.5V19m6-8a3.5 3.5 0 100-7 3.5 3.5 0 000 7zm7-6.5a3.5 3.5 0 010 6.8m3 7.7v-1.5a3.5 3.5 0 00-2.5-3.35" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>,
-                                                <svg key="plan" className="size-5" viewBox="0 0 24 24" fill="none"><path d="M5 5.5A1.5 1.5 0 016.5 4h11A1.5 1.5 0 0119 5.5v13a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 015 18.5v-13zM8 8h8m-8 4h8m-8 4h5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>,
-                                                <svg key="payments" className="size-5" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.7"/><path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>,
-                                                <svg key="discount" className="size-5" viewBox="0 0 24 24" fill="none"><path d="M20 13l-7 7-9-9V4h7l9 9zM8 8h.01" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>,
-                                                <svg key="wallet" className="size-5" viewBox="0 0 24 24" fill="none"><path d="M4 7.5A2.5 2.5 0 016.5 5H19v14H6.5A2.5 2.5 0 014 16.5v-9zM4 8h15m-4 5h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/><circle cx="15" cy="13" r=".8" fill="currentColor"/></svg>,
+                                                <i key="users" className="fa-solid fa-users size-5" aria-hidden="true"></i>,
+                                                <i key="plan" className="fa-solid fa-list-check size-5" aria-hidden="true"></i>,
+                                                <i key="payments" className="fa-solid fa-clock size-5" aria-hidden="true"></i>,
+                                                <i key="discount" className="fa-solid fa-tag size-5" aria-hidden="true"></i>,
+                                                <i key="wallet" className="fa-solid fa-wallet size-5" aria-hidden="true"></i>,
                                             ][index % 5]}
                                         </span>
                                     </div>
@@ -130,7 +130,7 @@ export default function Dashboard({
                                 {recentTransactions.length === 0 ? (
                                     <div className="px-6 py-14 text-center">
                                         <span className="mx-auto grid size-12 place-items-center rounded-2xl bg-slate-100 text-slate-500">
-                                            <svg className="size-6" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 6.5A1.5 1.5 0 016.5 5h11A1.5 1.5 0 0119 6.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 015 17.5v-11zM8 9h8m-8 3h8m-8 3h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                                            <i className="fa-solid fa-receipt text-xl" aria-hidden="true"></i>
                                         </span>
                                         <p className="mt-3 text-sm font-semibold text-slate-700">تراکنشی برای نمایش وجود ندارد.</p>
                                     </div>

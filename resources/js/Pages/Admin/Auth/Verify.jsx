@@ -27,7 +27,7 @@ export default function Verify() {
 
                 {flash.status && (
                     <div className="mt-5 flex gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 p-4 text-sm leading-7 text-indigo-800" role="status">
-                        <svg className="mt-1 size-5 shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.7"/><path d="M12 11v5m0-8h.01" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                        <i className="fa-solid fa-circle-info mt-1 size-5 shrink-0" aria-hidden="true"></i>
                         {flash.status}
                     </div>
                 )}

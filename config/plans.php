@@ -13,7 +13,7 @@ $featureGroups = [
         'family-allowance' => 'حق عائله‌مندی',
         'unemployment-insurance-allowance' => 'مبلغ مقرری بیمه بیکاری',
     ],
-    'اقلام مزدی غیرمستمر' => [
+    'اقلام مزدی غیر مستمر' => [
         'overtime-entitlement' => 'اضافه‌کاری',
         'night-shift-entitlement' => 'شب‌کاری',
         'monthly-shift-work' => 'نوبت‌کاری',
@@ -27,7 +27,7 @@ $featureGroups = [
         'mission-allowance' => 'فوق‌العاده مأموریت',
         'friday-work' => 'جمعه‌کاری',
     ],
-    'اقلام غیرمزدی' => [
+    'اقلام غیر مزدی' => [
         'unused-leave-entitlement' => 'میزان مرخصی ذخیره‌شده کارگر',
         'insurance-days-entitlement' => 'تعداد روزهای بیمه استحقاقی',
         'unemployment-insurance-entitlement' => 'مدت زمان پرداخت مقرری بیمه بیکاری',

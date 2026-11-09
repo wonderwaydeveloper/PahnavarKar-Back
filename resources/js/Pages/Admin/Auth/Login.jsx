@@ -19,7 +19,7 @@ export default function Login() {
 
                 {flash.status && (
                     <div className="mt-5 flex gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 p-4 text-sm leading-7 text-indigo-800" role="status">
-                        <svg className="mt-1 size-5 shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.7"/><path d="M12 11v5m0-8h.01" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                        <i className="fa-solid fa-circle-info mt-1 size-5 shrink-0" aria-hidden="true"></i>
                         {flash.status}
                     </div>
                 )}
@@ -44,7 +44,7 @@ export default function Login() {
                     </div>
                     <button className="mt-5 inline-flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 px-5 text-sm font-bold text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-200 disabled:cursor-wait disabled:opacity-60" type="submit" disabled={processing}>
                         {processing ? 'در حال ارسال…' : 'ارسال کد یک‌بارمصرف'}
-                        {!processing && <svg className="size-4" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7M8 12h12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        {!processing && <i className="fa-solid fa-arrow-left size-4" aria-hidden="true"></i>}
                     </button>
                 </form>
             </AuthShell>

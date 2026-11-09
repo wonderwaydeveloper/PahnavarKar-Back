@@ -184,14 +184,9 @@ export default function Index({ admin, discounts, filters }) {
                                 className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-indigo-200 bg-white text-indigo-700 transition hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-1"
                             >
                                 {copiedCode === flash.generatedCode ? (
-                                    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 4 4L19 6" />
-                                    </svg>
+                                    <i className="fa-solid fa-check h-4 w-4" aria-hidden="true" />
                                 ) : (
-                                    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-                                        <rect width="14" height="14" x="8" y="8" rx="2" />
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
-                                    </svg>
+                                    <i className="fa-solid fa-copy h-4 w-4" aria-hidden="true" />
                                 )}
                             </button>
                             {copiedCode === flash.generatedCode && <span role="status" className="text-xs text-emerald-700">کپی شد</span>}
@@ -227,14 +222,9 @@ export default function Index({ admin, discounts, filters }) {
                                                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-1"
                                                 >
                                                     {copiedCode === discount.code ? (
-                                                        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 text-emerald-600">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 4 4L19 6" />
-                                                        </svg>
+                                                        <i className="fa-solid fa-check h-4 w-4 text-emerald-600" aria-hidden="true" />
                                                     ) : (
-                                                        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-                                                            <rect width="14" height="14" x="8" y="8" rx="2" />
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
-                                                        </svg>
+                                                        <i className="fa-solid fa-copy h-4 w-4" aria-hidden="true" />
                                                     )}
                                                 </button>
                                                 {copyErrorCode === discount.code && <span role="alert" className="font-sans text-[10px] font-normal text-rose-700">کپی نشد</span>}

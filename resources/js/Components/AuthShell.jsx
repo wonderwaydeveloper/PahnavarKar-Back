@@ -21,7 +21,7 @@ export default function AuthShell({ children }) {
                 <div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5">
                     <ThemeSwitcher />
                     <div className="flex items-start gap-2.5 text-[11px] leading-6 text-slate-500">
-                        <svg className="mt-1 size-4 shrink-0 text-teal-600" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5l7 3v5.2c0 4.2-2.8 7.5-7 8.8-4.2-1.3-7-4.6-7-8.8V6.5l7-3zM9 12l2 2 4-4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        <i className="fa-solid fa-shield-halved mt-1 size-4 shrink-0 text-teal-600" aria-hidden="true"></i>
                         <span>دسترسی فقط برای حساب‌های دارای نقش مدیریتی مجاز است.</span>
                     </div>
                     <a
@@ -31,7 +31,7 @@ export default function AuthShell({ children }) {
                         rel="noopener noreferrer"
                     >
                         مشاهدهٔ سایت
-                        <svg className="size-3.5" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 5h5v5m0-5l-9 9m5-7v-2H6.5A1.5 1.5 0 005 6.5v11A1.5 1.5 0 006.5 19h11a1.5 1.5 0 001.5-1.5V13" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        <i className="fa-solid fa-arrow-up-right-from-square size-3.5" aria-hidden="true"></i>
                     </a>
                 </div>
             </section>

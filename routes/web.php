@@ -11,21 +11,49 @@ use App\Http\Controllers\Admin\AdminTwoFactorController;
 use App\Http\Controllers\Admin\AdminUserController;
 use App\Http\Controllers\Admin\AdminWebAuthController;
 use App\Http\Controllers\Admin\AdminWithdrawalPageController;
+use App\Http\Middleware\HandleInertiaRequests;
 use App\Services\Admin\AdminRuntimeSettings;
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
+use Illuminate\Http\Request;
+use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
 
-Route::get('/', function (AdminRuntimeSettings $runtimeSettings) {
-    $viewPath = resource_path('views/welcome.blade.php');
+$statelessPublicMiddleware = [
+    StartSession::class,
+    ShareErrorsFromSession::class,
+    PreventRequestForgery::class,
+    HandleInertiaRequests::class,
+];
+
+Route::get('/', function (Request $request, AdminRuntimeSettings $runtimeSettings) {
+    $viewPaths = [
+        resource_path('views/layouts/public.blade.php'),
+        resource_path('views/welcome.blade.php'),
+        resource_path('views/partials/public-header.blade.php'),
+        resource_path('views/partials/public-footer.blade.php'),
+        resource_path('views/partials/public-meta.blade.php'),
+        resource_path('views/partials/site-faq.blade.php'),
+        resource_path('views/partials/theme-bootstrap.blade.php'),
+    ];
     $manifestPath = public_path('build/manifest.json');
-    $viewVersion = is_file($viewPath) ? (string) filemtime($viewPath) : 'missing';
-    $assetVersion = is_file($manifestPath) ? (string) filemtime($manifestPath) : 'development';
+    $viewVersions = array_map(
+        static fn (string $path): string => is_file($path) ? (string) filemtime($path) : 'missing',
+        $viewPaths,
+    );
+    $assetVersion = is_file($manifestPath) ? hash_file('sha256', $manifestPath) : 'development';
     $plans = $runtimeSettings->plans();
     $siteContent = $runtimeSettings->siteContent();
-    $cacheKey = 'public-homepage:v1:'.hash('sha256', serialize([
+    $faqs = config('site-faq', []);
+    $cacheKey = 'public-homepage:v3:'.hash('sha256', serialize([
+        $request->getSchemeAndHttpHost(),
         $plans,
         $siteContent,
-        $viewVersion,
+        $faqs,
+        $viewVersions,
         $assetVersion,
     ]));
 
@@ -35,12 +63,165 @@ Route::get('/', function (AdminRuntimeSettings $runtimeSettings) {
         fn (): string => view('welcome', [
             'plans' => $plans,
             'siteContent' => $siteContent,
+            'faqs' => $faqs,
         ])->render(),
     );
 
     return response($html)
         ->header('Cache-Control', 'public, max-age=60, s-maxage=300');
-});
+})->withoutMiddleware($statelessPublicMiddleware)->name('home');
+
+Route::get('/tools', function (Request $request, AdminRuntimeSettings $runtimeSettings) {
+    $plans = $runtimeSettings->plans();
+    $features = collect($plans['features'])
+        ->except(['group-calculation', 'legal_library'])
+        ->map(function (array $feature, string $key): array {
+            $feature['key'] = $key;
+
+            return $feature;
+        });
+    $groups = $features->pluck('group')->filter()->unique()->values();
+    $validator = Validator::make($request->query(), [
+        'q' => ['nullable', 'string', 'max:100'],
+        'group' => ['nullable', 'string', 'in:'.implode(',', $groups->all())],
+    ]);
+    $filterErrors = $validator->errors()->all();
+    $validated = $filterErrors === [] ? $validator->validated() : [];
+    $search = trim($validated['q'] ?? '');
+
+    if ($filterErrors !== []) {
+        $features = $features->take(0);
+    }
+
+    $tools = $features
+        ->filter(function (array $feature) use ($search): bool {
+            if ($search === '') {
+                return true;
+            }
+
+            return Str::contains(
+                implode(' ', [$feature['label'], $feature['description'], $feature['group']]),
+                $search,
+                true,
+            );
+        })
+        ->groupBy('group');
+    $selectedGroup = $validated['group'] ?? ($search !== ''
+        ? $groups->first(fn (string $group): bool => $tools->has($group))
+        : $groups->first());
+    $selectedGroup ??= $groups->first();
+
+    $response = response()->view('tools.index', [
+        'siteContent' => $runtimeSettings->siteContent(),
+        'tools' => $tools,
+        'groups' => $groups,
+        'search' => $search,
+        'selectedGroup' => $selectedGroup,
+        'filterErrors' => $filterErrors,
+    ], $filterErrors === [] ? 200 : 422);
+
+    return $filterErrors === []
+        ? $response->header('Cache-Control', 'public, max-age=60, s-maxage=300')
+        : $response->header('Cache-Control', 'no-store');
+})->withoutMiddleware($statelessPublicMiddleware)->name('tools.index');
+
+Route::get('/tools/{tool}', function (string $tool, AdminRuntimeSettings $runtimeSettings) {
+    $plans = $runtimeSettings->plans();
+    $features = collect($plans['features'])->except('legal_library');
+    abort_unless($features->has($tool), 404);
+
+    $feature = $features->get($tool);
+    $enabledTiers = collect($plans['tiers'])
+        ->filter(fn (array $tier): bool => (bool) ($tier['features'][$tool] ?? false));
+
+    return response()->view('tools.show', [
+        'siteContent' => $runtimeSettings->siteContent(),
+        'toolKey' => $tool,
+        'tool' => $feature,
+        'enabledTiers' => $enabledTiers,
+    ])->header('Cache-Control', 'public, max-age=60, s-maxage=300');
+})->where('tool', '[A-Za-z0-9-]+')
+    ->withoutMiddleware($statelessPublicMiddleware)
+    ->name('tools.show');
+
+Route::get('/laws', function (AdminRuntimeSettings $runtimeSettings) {
+    return response()->view('laws.index', [
+        'siteContent' => $runtimeSettings->siteContent(),
+        'legalCategories' => config('site-legal-categories', []),
+    ])->header('Cache-Control', 'public, max-age=60, s-maxage=300');
+})->withoutMiddleware($statelessPublicMiddleware)->name('laws.index');
+
+Route::get('/faq', function (AdminRuntimeSettings $runtimeSettings) {
+    $relatedLinks = [
+        'tools' => [
+            'label' => 'مشاهدهٔ فهرست ابزارها',
+            'url' => route('tools.index'),
+        ],
+        'law-library' => [
+            'label' => 'مشاهدهٔ دسته‌های قوانین و مقررات',
+            'url' => route('laws.index'),
+        ],
+        'group-calculation' => [
+            'label' => 'جزئیات محاسبات جامع',
+            'url' => route('tools.show', 'group-calculation'),
+        ],
+    ];
+    $faqs = collect(config('site-faq', []))
+        ->map(function (array $faq) use ($relatedLinks): array {
+            $faq['related'] = $relatedLinks[$faq['related_link'] ?? ''] ?? null;
+
+            return $faq;
+        })
+        ->all();
+
+    return response()->view('faq.index', [
+        'siteContent' => $runtimeSettings->siteContent(),
+        'faqs' => $faqs,
+    ])->header('Cache-Control', 'public, max-age=60, s-maxage=300');
+})->withoutMiddleware($statelessPublicMiddleware)->name('faq.index');
+
+Route::get('/blog', function (AdminRuntimeSettings $runtimeSettings) {
+    return response()->view('blog.index', [
+        'siteContent' => $runtimeSettings->siteContent(),
+    ])->header('Cache-Control', 'public, max-age=60, s-maxage=300');
+})->withoutMiddleware($statelessPublicMiddleware)->name('blog.index');
+
+Route::get('/about', function (AdminRuntimeSettings $runtimeSettings) {
+    return response()->view('about', [
+        'siteContent' => $runtimeSettings->siteContent(),
+    ])->header('Cache-Control', 'public, max-age=60, s-maxage=300');
+})->withoutMiddleware($statelessPublicMiddleware)->name('about');
+
+Route::get('/terms-of-use', function (AdminRuntimeSettings $runtimeSettings) {
+    return response()->view('terms-of-use', [
+        'siteContent' => $runtimeSettings->siteContent(),
+    ])->header('Cache-Control', 'public, max-age=60, s-maxage=300');
+})->withoutMiddleware($statelessPublicMiddleware)->name('terms');
+
+Route::get('/robots.txt', function () {
+    return response()->view('robots', [], 200, ['Content-Type' => 'text/plain; charset=UTF-8'])
+        ->header('Cache-Control', 'public, max-age=3600');
+})->withoutMiddleware($statelessPublicMiddleware)->name('robots');
+
+Route::get('/sitemap.xml', function () {
+    $toolUrls = collect(config('plans.features', []))
+        ->except('legal_library')
+        ->keys()
+        ->map(fn (string $tool): string => route('tools.show', $tool));
+
+    return response()->view('sitemap', [
+        'urls' => collect([
+            route('home'),
+            route('about'),
+            route('terms'),
+            route('blog.index'),
+            route('tools.index'),
+            route('laws.index'),
+            route('faq.index'),
+        ])->concat($toolUrls),
+    ], 200, ['Content-Type' => 'application/xml; charset=UTF-8'])
+        ->header('Cache-Control', 'public, max-age=3600');
+})->withoutMiddleware($statelessPublicMiddleware)->name('sitemap');
 
 Route::prefix('admin')->name('admin.')->group(function (): void {
     Route::get('/login', [AdminWebAuthController::class, 'showLogin'])->name('login');

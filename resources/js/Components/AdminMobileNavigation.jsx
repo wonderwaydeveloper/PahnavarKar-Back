@@ -29,9 +29,7 @@ export default function AdminMobileNavigation({ className = '' }) {
                 onClick={() => setIsOpen(true)}
                 className={`grid size-10 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-teal-100 ${className}`}
             >
-                <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                </svg>
+                <i className="fa-solid fa-bars size-5" aria-hidden="true" />
             </button>
             {isOpen && typeof document !== 'undefined' && createPortal(
                 <div className="fixed inset-0 z-50 flex justify-start bg-slate-950/30 backdrop-blur-[2px]" onMouseDown={event => {
@@ -47,7 +45,7 @@ export default function AdminMobileNavigation({ className = '' }) {
                                 </div>
                             </div>
                             <button type="button" onClick={() => setIsOpen(false)} aria-label="بستن منو" className="grid size-9 shrink-0 place-items-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-900">
-                                <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+                                <i className="fa-solid fa-xmark size-5" aria-hidden="true" />
                             </button>
                         </div>
                         <div className="mt-5 flex-1">
